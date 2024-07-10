@@ -45,8 +45,8 @@ inline fn dtypeOfStruct(T: type) []const u8 {
 
 pub fn dtypeOf(comptime T: type) []const u8 {
     switch (T) {
-        u8 => return "u1",
-        i8 => return "i1",
+        u8 => return "|u1",
+        i8 => return "|i1",
         else => {},
     }
     if (native_endian == .little) {
@@ -100,7 +100,7 @@ test "struct with internal padding" {
     };
     try t.expectEqual(16, @sizeOf(Foo));
     try t.expectEqual(8, @alignOf(Foo));
-    try t.expectEqualStrings("[('a', 'u1'), ('', '|V7'), ('b', '<i8')]", dtypeOf(Foo));
+    try t.expectEqualStrings("[('a', '|u1'), ('', '|V7'), ('b', '<i8')]", dtypeOf(Foo));
 }
 
 test "struct with alignment requirements" {
@@ -111,7 +111,7 @@ test "struct with alignment requirements" {
         shape: u8,
     };
     try t.expectEqual(12, @sizeOf(Point));
-    try t.expectEqualStrings("[('x', '<f4'), ('y', '<f4'), ('shape', 'u1'), ('', '|V3')]", dtypeOf(Point));
+    try t.expectEqualStrings("[('x', '<f4'), ('y', '<f4'), ('shape', '|u1'), ('', '|V3')]", dtypeOf(Point));
 }
 
 // vim: set tw=100 sw=4 expandtab:
