@@ -82,4 +82,34 @@ test "padding.npy" {
     return @import("tests.zig").expectReference("padding.npy", fp);
 }
 
+test "person.npy" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const Person = extern struct {
+        name: [6:0]u8,
+        age: u8,
+
+        inline fn init(name: []const u8, age: u8) @This() {
+            var p = std.mem.zeroes(@This());
+            p.age = age;
+            if (name.len > p.name.len) {
+                @panic("name too long");
+            }
+            @memcpy(p.name[0..name.len], name);
+            return p;
+        }
+    };
+    const data = [_]Person{
+        Person.init("Alice", 25),
+        Person.init("Bob", 30),
+        Person.init("Albert", 35),
+    };
+    var fp = try tmp.dir.createFile("person.npy", .{ .read = true });
+    defer fp.close();
+    try save(fp, &data);
+
+    return @import("tests.zig").expectReference("person.npy", fp);
+}
+
 // vim: set tw=100 sw=4 expandtab:

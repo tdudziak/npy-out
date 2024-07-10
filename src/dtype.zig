@@ -10,6 +10,16 @@ inline fn namedField(field: std.builtin.Type.StructField) []const u8 {
     return comptimePrint("('{s}', '{s}')", .{ field.name, dtypeOf(field.type) });
 }
 
+inline fn dtypeArray(T: type) []const u8 {
+    const tinfo = @typeInfo(T).Array;
+    if (tinfo.child == u8 and tinfo.sentinel != null) {
+        // TODO: verify that the sentinel is 0
+        return comptimePrint("|S{}", .{tinfo.len + 1});
+    }
+    // TODO: support ordinary arrays
+    @compileError(comptimePrint("NumPy export not supported for type: {}", .{T}));
+}
+
 inline fn dtypeOfStruct(T: type) []const u8 {
     const tinfo = @typeInfo(T).Struct;
     if (tinfo.layout != .@"packed" and tinfo.layout != .@"extern") {
@@ -76,10 +86,11 @@ pub fn dtypeOf(comptime T: type) []const u8 {
     } else {
         @compileError("Unknown endianness");
     }
-    if (@typeInfo(T) == .Struct) {
-        return dtypeOfStruct(T);
+    switch (@typeInfo(T)) {
+        .Struct => return dtypeOfStruct(T),
+        .Array => return dtypeArray(T),
+        else => @compileError(comptimePrint("NumPy export not supported for type: {}", .{T})),
     }
-    @compileError(comptimePrint("NumPy export not supported for type: {}", .{T}));
 }
 
 test "simple floats and float structs" {
@@ -112,6 +123,16 @@ test "struct with alignment requirements" {
     };
     try t.expectEqual(12, @sizeOf(Point));
     try t.expectEqualStrings("[('x', '<f4'), ('y', '<f4'), ('shape', '|u1'), ('', '|V3')]", dtypeOf(Point));
+}
+
+test "byte strings" {
+    const t = std.testing;
+    const Person = extern struct {
+        name: [6:0]u8, // 7 bytes together with the sentinel
+        age: u8,
+    };
+    try t.expectEqual(8, @sizeOf(Person));
+    try t.expectEqualStrings("[('name', '|S7'), ('age', '|u1')]", dtypeOf(Person));
 }
 
 // vim: set tw=100 sw=4 expandtab:
