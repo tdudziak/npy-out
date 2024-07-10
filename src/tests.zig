@@ -40,6 +40,16 @@ pub fn expectEqualsReferenceSaved(fname: []const u8, slice: anytype) !void {
     return expectEqualsReferenceFile(fname, fp);
 }
 
+test "empty.npy" {
+    const data = [_]f32{};
+    return expectEqualsReferenceSaved("empty.npy", &data);
+}
+
+test "array.npy" {
+    const data = [_]f32{ 1.0, 2.0, 3.0, 4.0, 5.0 };
+    return expectEqualsReferenceSaved("array.npy", &data);
+}
+
 test "points.npy" {
     const Point = extern struct {
         x: f32,

@@ -7,14 +7,14 @@ inline fn voidField(nbytes: usize) []const u8 {
 }
 
 inline fn namedField(field: std.builtin.Type.StructField) []const u8 {
-    return comptimePrint("('{s}', '{s}')", .{ field.name, dtypeOf(field.type) });
+    return comptimePrint("('{s}', {s})", .{ field.name, dtypeOf(field.type) });
 }
 
 inline fn dtypeArray(T: type) []const u8 {
     const tinfo = @typeInfo(T).Array;
     if (tinfo.child == u8 and tinfo.sentinel != null) {
         // TODO: verify that the sentinel is 0
-        return comptimePrint("|S{}", .{tinfo.len + 1});
+        return comptimePrint("'|S{}'", .{tinfo.len + 1});
     }
     // TODO: support ordinary arrays
     @compileError(comptimePrint("NumPy export not supported for type: {}", .{T}));
@@ -53,34 +53,37 @@ inline fn dtypeOfStruct(T: type) []const u8 {
     };
 }
 
+/// Returns the NumPy type for a given comptime-known Zig type. The result is a valid Python
+/// expression that can be stored in the header of an NPY file or passed as argument to
+/// `numpy.dtype()`.
 pub fn dtypeOf(comptime T: type) []const u8 {
     switch (T) {
-        u8 => return "|u1",
-        i8 => return "|i1",
+        u8 => return "'|u1'",
+        i8 => return "'|i1'",
         else => {},
     }
     if (native_endian == .little) {
         switch (T) {
-            u16 => return "<u2",
-            u32 => return "<u4",
-            u64 => return "<u8",
-            i16 => return "<i2",
-            i32 => return "<i4",
-            i64 => return "<i8",
-            f32 => return "<f4",
-            f64 => return "<f8",
+            u16 => return "'<u2'",
+            u32 => return "'<u4'",
+            u64 => return "'<u8'",
+            i16 => return "'<i2'",
+            i32 => return "'<i4'",
+            i64 => return "'<i8'",
+            f32 => return "'<f4'",
+            f64 => return "'<f8'",
             else => {},
         }
     } else if (native_endian == .big) {
         switch (T) {
-            u16 => return ">u2",
-            u32 => return ">u4",
-            u64 => return ">u8",
-            i16 => return ">i2",
-            i32 => return ">i4",
-            i64 => return ">i8",
-            f32 => return ">f4",
-            f64 => return ">f8",
+            u16 => return "'>u2'",
+            u32 => return "'>u4'",
+            u64 => return "'>u8'",
+            i16 => return "'>i2'",
+            i32 => return "'>i4'",
+            i64 => return "'>i8'",
+            f32 => return "'>f4'",
+            f64 => return "'>f8'",
             else => {},
         }
     } else {
@@ -95,8 +98,8 @@ pub fn dtypeOf(comptime T: type) []const u8 {
 
 test "simple floats and float structs" {
     const expectEqualStrings = std.testing.expectEqualStrings;
-    try expectEqualStrings("<f4", dtypeOf(f32));
-    try expectEqualStrings("<f8", dtypeOf(f64));
+    try expectEqualStrings("'<f4'", dtypeOf(f32));
+    try expectEqualStrings("'<f8'", dtypeOf(f64));
     try expectEqualStrings("[('x', '<f4'), ('y', '<f4')]", dtypeOf(extern struct {
         x: f32,
         y: f32,
