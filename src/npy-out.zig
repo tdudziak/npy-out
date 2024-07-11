@@ -1,12 +1,18 @@
 const std = @import("std");
-const dtypeOf = @import("dtype.zig").dtypeOf;
+const dtype = @import("dtype.zig");
 
 const MAGIC = "\x93NUMPY";
 const VERSION = "\x01\x00";
 
 pub fn save(file: std.fs.File, slice: anytype) !void {
+    // TODO: prependShape() could use a writer to avoid the extra allocation
+    const allocator = std.heap.c_allocator;
+
     // TODO: nicer error messages when wrong argument passed as 'slice'?
     const T = @TypeOf(slice.ptr[0]);
+    const dtinfo = dtype.dtypeOf(T);
+    const shape = try dtype.prependShape(allocator, slice.len, dtinfo.shape);
+    defer allocator.free(shape);
 
     const start_off = try file.getPos(); // TODO: will this ever be nonzero?
     try file.writeAll(MAGIC);
@@ -18,9 +24,10 @@ pub fn save(file: std.fs.File, slice: anytype) !void {
 
     // write the header ASCII string
     try file.writeAll("{'descr': ");
-    try file.writeAll(dtypeOf(T));
-    try file.writeAll(", 'fortran_order': False, 'shape': (");
-    try file.writer().print("{},), }}", .{slice.len});
+    try file.writeAll(dtinfo.dtype);
+    try file.writeAll(", 'fortran_order': False, 'shape': ");
+    try file.writeAll(shape);
+    try file.writeAll(", }");
 
     // pad with spaces so that start of binary data is aligned to 64 bytes
     while ((try file.getPos() - start_off) % 64 != 0) {

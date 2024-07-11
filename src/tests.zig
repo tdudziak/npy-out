@@ -165,4 +165,39 @@ test "embedded_struct.npy" {
     return expectEqualsReferenceSaved("embedded_struct.npy", &data);
 }
 
+test "matrix.npy" {
+    const data = [3][3]f32{
+        [3]f32{ 1.0, 2.0, 3.0 },
+        [3]f32{ 4.0, 5.0, 6.0 },
+        [3]f32{ 7.0, 8.0, 9.0 },
+    };
+    return expectEqualsReferenceSaved("matrix.npy", &data);
+}
+
+test "embedded_array.npy" {
+    const Foo = extern struct {
+        vals16: [4]i16,
+        vals32: [2]f32,
+        matrix: [2][2]f32,
+
+        inline fn init(comptime n: comptime_int) @This() {
+            const nf: f32 = @floatFromInt(n);
+            return @This(){
+                .vals16 = [4]i16{ n, n + 1, n + 2, n + 3 },
+                .vals32 = [2]f32{ nf, -nf },
+                .matrix = [2][2]f32{
+                    [2]f32{ nf, nf + 1 },
+                    [2]f32{ nf + 2, nf + 3 },
+                },
+            };
+        }
+    };
+    const data = [_]Foo{
+        Foo.init(-10),
+        Foo.init(0),
+        Foo.init(10),
+    };
+    return expectEqualsReferenceSaved("embedded_array.npy", &data);
+}
+
 // vim: set tw=100 sw=4 expandtab:
