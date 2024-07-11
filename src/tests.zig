@@ -4,11 +4,19 @@ comptime {
 }
 const std = @import("std");
 
+fn openDataDir(allocator: std.mem.Allocator) !std.fs.Dir {
+    const src_file = try std.fs.cwd().realpathAlloc(allocator, @src().file);
+    defer allocator.free(src_file);
+    const src_dir = std.fs.path.dirname(src_file) orelse "";
+    const data_dir = try std.fs.path.join(allocator, &[_][]const u8{ src_dir, "..", "data" });
+    defer allocator.free(data_dir);
+    return std.fs.openDirAbsolute(data_dir, .{});
+}
+
 /// Verifies that the contents of the file pointed to by `fp` match the contents of the file with a
 /// given name in the `data` directory.
 pub fn expectEqualsReferenceFile(fname: []const u8, fp: std.fs.File) !void {
-    // TODO: find project root with @src()?
-    var data_dir = try std.fs.cwd().openDir("data", .{});
+    var data_dir = try openDataDir(std.testing.allocator);
     defer data_dir.close();
     var fp_ref = try data_dir.openFile(fname, .{});
     defer fp_ref.close();
@@ -29,12 +37,47 @@ pub fn expectEqualsReferenceFile(fname: []const u8, fp: std.fs.File) !void {
     }
 }
 
+/// Allows to override the output directory for the tests by setting the `NPY_OUT_DIR` environment
+/// variable. If the variable is not set, a temporary directory is used and the output file is
+/// deleted after the test.
+const OutDir = union(enum) {
+    tmpDir: std.testing.TmpDir,
+    outDir: std.fs.Dir,
+
+    const Self = @This();
+
+    fn init() !Self {
+        if (std.process.getEnvVarOwned(std.testing.allocator, "NPY_OUT_DIR")) |path| {
+            defer std.testing.allocator.free(path);
+            const out_dir = try std.fs.openDirAbsolute(path, .{});
+            return Self{ .outDir = out_dir };
+        } else |_| {
+            const tmp_dir = std.testing.tmpDir(.{});
+            return Self{ .tmpDir = tmp_dir };
+        }
+    }
+
+    fn dir(self: *const Self) std.fs.Dir {
+        return switch (self.*) {
+            .tmpDir => self.tmpDir.dir,
+            .outDir => self.outDir,
+        };
+    }
+
+    fn deinit(self: *Self) void {
+        switch (self.*) {
+            .tmpDir => self.tmpDir.cleanup(),
+            .outDir => self.outDir.close(),
+        }
+    }
+};
+
 /// Serializes the given slice to a temporary file with `save()` and verifies that the output
 /// matches the contents of a file with a given name in the `data` directory.
 pub fn expectEqualsReferenceSaved(fname: []const u8, slice: anytype) !void {
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    var fp = try tmp.dir.createFile(fname, .{ .read = true });
+    var out = try OutDir.init();
+    defer out.deinit();
+    var fp = try out.dir().createFile(fname, .{ .read = true });
     defer fp.close();
     try @import("npy-out.zig").save(fp, slice);
     return expectEqualsReferenceFile(fname, fp);
@@ -97,6 +140,29 @@ test "person.npy" {
         Person.init("Albert", 35),
     };
     return expectEqualsReferenceSaved("person.npy", &data);
+}
+
+test "embedded_struct.npy" {
+    const Foo = extern struct {
+        a: i16,
+        b: i16,
+        point: extern struct {
+            x: f32,
+            y: f32,
+        },
+
+        inline fn init(n: i16) @This() {
+            const nf: f32 = @floatFromInt(n);
+            return @This(){ .a = n, .b = 10 + n, .point = .{ .x = -nf, .y = 100 + nf } };
+        }
+    };
+    const data = [_]Foo{
+        Foo.init(1),
+        Foo.init(2),
+        Foo.init(3),
+        Foo.init(4),
+    };
+    return expectEqualsReferenceSaved("embedded_struct.npy", &data);
 }
 
 // vim: set tw=100 sw=4 expandtab:
