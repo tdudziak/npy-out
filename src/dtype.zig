@@ -19,6 +19,8 @@ pub const DTypeInfo = struct {
     }
 };
 
+/// Comptime variant of prependShape(). Only used internally in this module to construct dtypes of
+/// multidimensional array types.
 inline fn comptimePrependShape(comptime n: usize, comptime shape: []const u8) []const u8 {
     const eql = std.mem.eql;
     if (eql(u8, shape, "()")) {
@@ -37,23 +39,30 @@ inline fn comptimePrependShape(comptime n: usize, comptime shape: []const u8) []
     return comptimePrint("({d}, {s})", .{ n, shape[1 .. shape.len - 1] });
 }
 
-pub fn prependShape(allocator: std.mem.Allocator, n: usize, shape: []const u8) ![]const u8 {
+/// Takes a Python tuple `shape` as a string and reformats it to include an additional dimension of
+/// given size at position 0. Writes the output to a given writer. Can be used to construct the
+/// shape of tuples of arrays, where the first dimension is only known at runtime.
+///
+/// Example:
+///     3, "()" -> "(3,)"
+///     3, "(4,)" -> "(3, 4)"
+///     3, "(4, 5)" -> "(3, 4, 5)"
+pub fn prependShape(writer: std.io.AnyWriter, n: usize, shape: []const u8) !void {
     const eql = std.mem.eql;
-    const allocPrint = std.fmt.allocPrint;
     if (eql(u8, shape, "()")) {
-        return allocPrint(allocator, "({d},)", .{n});
+        return writer.print("({d},)", .{n});
     }
     if (eql(u8, shape[shape.len - 2 ..], ",)")) {
         // single element tuple, e.g. "(1, )"
         if (shape[0] != '(') {
             return error.InvalidShape;
         }
-        return allocPrint(allocator, "({d}, {s})", .{ n, shape[1 .. shape.len - 2] });
+        return writer.print("({d}, {s})", .{ n, shape[1 .. shape.len - 2] });
     }
     if (shape[0] != '(' or shape[shape.len - 1] != ')') {
         return error.InvalidShape;
     }
-    return allocPrint(allocator, "({d}, {s})", .{ n, shape[1 .. shape.len - 1] });
+    return writer.print("({d}, {s})", .{ n, shape[1 .. shape.len - 1] });
 }
 
 inline fn voidField(nbytes: usize) []const u8 {
@@ -227,11 +236,11 @@ test "arrays" {
 }
 
 test "comptimePrependShape()" {
+    const t = std.testing;
     comptime {
-        const t = std.testing;
-        const scalar = DTypeInfo.scalar("<f4");
-        try t.expectEqualStrings("()", scalar.shape);
-        const arr1d = comptimePrependShape(5, scalar.shape);
+        const scalar = DTypeInfo.scalar("<f4").shape;
+        try t.expectEqualStrings("()", scalar);
+        const arr1d = comptimePrependShape(5, scalar);
         try t.expectEqualStrings("(5,)", arr1d);
         const arr2d = comptimePrependShape(3, arr1d);
         try t.expectEqualStrings("(3, 5)", arr2d);
@@ -240,6 +249,30 @@ test "comptimePrependShape()" {
         const arr4d = comptimePrependShape(11, arr3d);
         try t.expectEqualStrings("(11, 7, 3, 5)", arr4d);
     }
+}
+
+test "prependShape()" {
+    const t = std.testing;
+    const scalar = DTypeInfo.scalar("<f4").shape;
+
+    var buf = std.ArrayList(u8).init(std.testing.allocator);
+    defer buf.deinit();
+    const writer = buf.writer().any();
+
+    try prependShape(writer, 5, scalar);
+    try t.expectEqualStrings("(5,)", buf.items);
+
+    buf.clearRetainingCapacity();
+    try prependShape(writer, 3, "(5,)");
+    try t.expectEqualStrings("(3, 5)", buf.items);
+
+    buf.clearRetainingCapacity();
+    try prependShape(writer, 7, "(3, 5)");
+    try t.expectEqualStrings("(7, 3, 5)", buf.items);
+
+    buf.clearRetainingCapacity();
+    try prependShape(writer, 11, "(7, 3, 5)");
+    try t.expectEqualStrings("(11, 7, 3, 5)", buf.items);
 }
 
 // vim: set tw=100 sw=4 expandtab:
