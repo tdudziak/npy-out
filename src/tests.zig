@@ -200,4 +200,29 @@ test "embedded_array.npy" {
     return expectEqualsReferenceSaved("embedded_array.npy", &data);
 }
 
+test "just_strings.npy" {
+    const copy = std.mem.copyForwards;
+    var data = std.mem.zeroes([5][7:0]u8);
+    copy(u8, &data[0], "hello");
+    copy(u8, &data[1], "world");
+    // empty string at data[2]
+    copy(u8, &data[3], "this is");
+    copy(u8, &data[4], "a test");
+    return expectEqualsReferenceSaved("just_strings.npy", &data);
+}
+
+test "fixlen_strings.npy" {
+    const copy = std.mem.copyForwards;
+    var data = std.mem.zeroes([5][7]u8);
+    copy(u8, &data[0], "hello");
+    copy(u8, &data[1], "world");
+    // empty string at data[2]
+    copy(u8, &data[3], "this is");
+    copy(u8, &data[4], "a test");
+    const as_slice: []const [7]u8 = &data; // not needed but just to make sure it also works
+    return expectEqualsReferenceSaved("fixlen_strings.npy", as_slice);
+    // TODO: This gets saved as a matrix of bytes. Is there any scenario where we'd prefer '|S7'
+    // instead?
+}
+
 // vim: set tw=100 sw=4 expandtab:

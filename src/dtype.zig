@@ -81,7 +81,10 @@ inline fn namedField(field: std.builtin.Type.StructField) []const u8 {
 inline fn handleArray(T: type) DTypeInfo {
     const tinfo = @typeInfo(T).Array;
     if (tinfo.child == u8 and tinfo.sentinel != null) {
-        // TODO: verify that the sentinel is 0
+        const sentinel: *const u8 = @ptrCast(tinfo.sentinel.?);
+        if (sentinel.* != 0) {
+            @compileError("Only null-terminated byte strings are supported");
+        }
         return DTypeInfo.scalar(comptimePrint("'|S{}'", .{tinfo.len + 1}));
     }
     comptime {

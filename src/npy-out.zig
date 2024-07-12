@@ -4,8 +4,24 @@ const dtype = @import("dtype.zig");
 const MAGIC = "\x93NUMPY";
 const VERSION = "\x01\x00";
 
+inline fn ensureSliceOrArrayPointer(comptime T: type) void {
+    const tinfo = @typeInfo(T);
+    if (tinfo == .Pointer) {
+        if (tinfo.Pointer.size == .Slice) {
+            return; // slice
+        }
+        if (tinfo.Pointer.size == .One) {
+            const child = @typeInfo(tinfo.Pointer.child);
+            if (child == .Array) {
+                return; // pointer to an array
+            }
+        }
+    }
+    @compileError(std.fmt.comptimePrint("Expected a slice or array argument, got '{}'", .{T}));
+}
+
 pub fn save(file: std.fs.File, slice: anytype) !void {
-    // TODO: nicer error messages when wrong argument passed as 'slice'?
+    ensureSliceOrArrayPointer(@TypeOf(slice)); // only needed for nicer error messages
     const T = @TypeOf(slice.ptr[0]);
     const dtinfo = dtype.dtypeOf(T);
 
