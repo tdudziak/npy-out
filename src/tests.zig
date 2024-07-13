@@ -74,13 +74,55 @@ const OutDir = union(enum) {
 
 /// Serializes the given slice to a temporary file with `save()` and verifies that the output
 /// matches the contents of a file with a given name in the `data` directory.
-pub fn expectEqualsReferenceSaved(fname: []const u8, slice: anytype) !void {
+fn expectEqualsReferenceSaved(fname: []const u8, slice: anytype) !void {
     var out = try OutDir.init();
     defer out.deinit();
     var fp = try out.dir().createFile(fname, .{ .read = true });
     defer fp.close();
     try @import("npy-out.zig").save(fp, slice);
     return expectEqualsReferenceFile(fname, fp);
+}
+
+/// Like expectEqualsReferenceSaved() but appends the elements of the slice one by one.
+fn expectEqualsReferenceAppend(fname: []const u8, slice: anytype) !void {
+    var out = try OutDir.init();
+    defer out.deinit();
+    var fp = try out.dir().createFile(fname, .{ .read = true });
+    defer fp.close();
+    var npy_out = try @import("npy-out.zig").NpyOut(@TypeOf(slice[0])).init(fp, true);
+    for (slice) |item| {
+        try npy_out.append(item);
+    }
+    return expectEqualsReferenceFile(fname, fp);
+}
+
+/// Like expectEqualsReferenceAppend() but appends the elements of the slice in pairs with
+/// appendSlice().
+fn expectEqualsReferencePairs(fname: []const u8, slice: anytype) !void {
+    var out = try OutDir.init();
+    defer out.deinit();
+    var fp = try out.dir().createFile(fname, .{ .read = true });
+    defer fp.close();
+    var npy_out = try @import("npy-out.zig").NpyOut(@TypeOf(slice[0])).init(fp, true);
+
+    var i: usize = 0;
+    while (i < slice.len) {
+        if (i + 2 <= slice.len) {
+            try npy_out.appendSlice(slice[i .. i + 2]);
+            i += 2;
+        } else {
+            try npy_out.append(slice[i]);
+            i += 1;
+        }
+    }
+
+    return expectEqualsReferenceFile(fname, fp);
+}
+
+fn expectEqualsReferenceAll(fname: []const u8, slice: anytype) !void {
+    try expectEqualsReferenceSaved(fname, slice);
+    try expectEqualsReferenceAppend(fname, slice);
+    try expectEqualsReferencePairs(fname, slice);
 }
 
 test "empty.npy" {
@@ -90,7 +132,7 @@ test "empty.npy" {
 
 test "array.npy" {
     const data = [_]f32{ 1.0, 2.0, 3.0, 4.0, 5.0 };
-    return expectEqualsReferenceSaved("array.npy", &data);
+    return expectEqualsReferenceAll("array.npy", &data);
 }
 
 test "points.npy" {
@@ -99,7 +141,7 @@ test "points.npy" {
         y: f32,
     };
     const data = [_]Point{ .{ .x = 10, .y = -100 }, .{ .x = 11, .y = -101 }, .{ .x = 12, .y = -102 } };
-    return expectEqualsReferenceSaved("points.npy", &data);
+    return expectEqualsReferenceAll("points.npy", &data);
 }
 
 test "padding.npy" {
@@ -116,7 +158,7 @@ test "padding.npy" {
         .{ .smol = 3, .beeg = 3333333333333333333, .teeny = -4 },
         .{ .smol = 4, .beeg = 4444444444444444444, .teeny = -5 },
     };
-    return expectEqualsReferenceSaved("padding.npy", &data);
+    return expectEqualsReferenceAll("padding.npy", &data);
 }
 
 test "person.npy" {
@@ -139,7 +181,7 @@ test "person.npy" {
         Person.init("Bob", 30),
         Person.init("Albert", 35),
     };
-    return expectEqualsReferenceSaved("person.npy", &data);
+    return expectEqualsReferenceAll("person.npy", &data);
 }
 
 test "embedded_struct.npy" {
@@ -162,7 +204,7 @@ test "embedded_struct.npy" {
         Foo.init(3),
         Foo.init(4),
     };
-    return expectEqualsReferenceSaved("embedded_struct.npy", &data);
+    return expectEqualsReferenceAll("embedded_struct.npy", &data);
 }
 
 test "matrix.npy" {
@@ -171,7 +213,7 @@ test "matrix.npy" {
         [3]f32{ 4.0, 5.0, 6.0 },
         [3]f32{ 7.0, 8.0, 9.0 },
     };
-    return expectEqualsReferenceSaved("matrix.npy", &data);
+    return expectEqualsReferenceAll("matrix.npy", &data);
 }
 
 test "embedded_array.npy" {
@@ -197,7 +239,7 @@ test "embedded_array.npy" {
         Foo.init(0),
         Foo.init(10),
     };
-    return expectEqualsReferenceSaved("embedded_array.npy", &data);
+    return expectEqualsReferenceAll("embedded_array.npy", &data);
 }
 
 test "just_strings.npy" {
@@ -208,7 +250,7 @@ test "just_strings.npy" {
     // empty string at data[2]
     copy(u8, &data[3], "this is");
     copy(u8, &data[4], "a test");
-    return expectEqualsReferenceSaved("just_strings.npy", &data);
+    return expectEqualsReferenceAll("just_strings.npy", &data);
 }
 
 test "fixlen_strings.npy" {
@@ -220,7 +262,7 @@ test "fixlen_strings.npy" {
     copy(u8, &data[3], "this is");
     copy(u8, &data[4], "a test");
     const as_slice: []const [7]u8 = &data; // not needed but just to make sure it also works
-    return expectEqualsReferenceSaved("fixlen_strings.npy", as_slice);
+    return expectEqualsReferenceAll("fixlen_strings.npy", as_slice);
     // TODO: This gets saved as a matrix of bytes. Is there any scenario where we'd prefer '|S7'
     // instead?
 }
