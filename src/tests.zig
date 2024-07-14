@@ -96,6 +96,30 @@ fn expectEqualsReferenceAppend(fname: []const u8, slice: anytype) !void {
     return expectEqualsReferenceFile(fname, fp);
 }
 
+/// Like expectEqualsReferenceAppend() but closes and re-open the file after each append.
+fn expectEqualsReferenceAppendClose(fname: []const u8, slice: anytype) !void {
+    const NpyOut = @import("npy-out.zig").NpyOut(@TypeOf(slice[0]));
+    var out = try OutDir.init();
+    defer out.deinit();
+
+    {
+        var fp = try out.dir().createFile(fname, .{ .read = true });
+        defer fp.close();
+        _ = try NpyOut.init(fp, true);
+    }
+
+    for (slice) |item| {
+        var fp = try out.dir().openFile(fname, .{ .mode = .read_write });
+        defer fp.close();
+        var npy_out = try NpyOut.init(fp, true);
+        try npy_out.append(item);
+    }
+
+    var fp = try out.dir().openFile(fname, .{});
+    defer fp.close();
+    return expectEqualsReferenceFile(fname, fp);
+}
+
 /// Like expectEqualsReferenceAppend() but appends the elements of the slice in pairs with
 /// appendSlice().
 fn expectEqualsReferencePairs(fname: []const u8, slice: anytype) !void {
@@ -122,6 +146,7 @@ fn expectEqualsReferencePairs(fname: []const u8, slice: anytype) !void {
 fn expectEqualsReferenceAll(fname: []const u8, slice: anytype) !void {
     try expectEqualsReferenceSaved(fname, slice);
     try expectEqualsReferenceAppend(fname, slice);
+    try expectEqualsReferenceAppendClose(fname, slice);
     try expectEqualsReferencePairs(fname, slice);
 }
 
