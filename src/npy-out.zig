@@ -138,35 +138,45 @@ pub fn NpyOut(comptime T: type) type {
             self.tail_offset = @sizeOf(T) * self.len + self.bin_start_offset.?;
         }
 
-        fn writeHeader(self: *Self) !void {
+        fn writeHeaderToWriter(self: *const Self, in_writer: std.io.AnyWriter, dummy_hlen: bool) !usize {
             const dtinfo = dtype.dtypeOf(T);
-            var file = self.file;
-            try file.seekTo(self.start_offset);
+            var counter = std.io.countingWriter(in_writer);
+            var writer = counter.writer().any();
+            try writer.writeAll(MAGIC);
+            try writer.writeAll(VERSION);
 
-            try file.writeAll(MAGIC);
-            try file.writeAll(VERSION);
-
-            // HEADER_LEN will be filled in later
-            const header_len_off = try file.getPos();
-            try file.writeAll(&[2]u8{ 0, 0 });
+            // determine and write HEADER_LEN by calling recursively if needed
+            if (dummy_hlen) {
+                try writer.writeInt(u16, 0, .little);
+            } else {
+                const hlen = try self.writeHeaderToWriter(std.io.null_writer.any(), true) - 10;
+                // TODO: check for overflow and produce header in newer format
+                try writer.writeInt(u16, @intCast(hlen), .little);
+            }
 
             // write the header ASCII string
-            try file.writeAll("{'descr': ");
-            try file.writeAll(dtinfo.dtype);
-            try file.writeAll(", 'fortran_order': False, 'shape': ");
-            try dtype.prependShape(file.writer().any(), self.len, dtinfo.shape);
-            try file.writeAll(", }");
+            try writer.writeAll("{'descr': ");
+            try writer.writeAll(dtinfo.dtype);
+            try writer.writeAll(", 'fortran_order': False, 'shape': ");
+            try dtype.prependShape(writer, self.len, dtinfo.shape);
+            try writer.writeAll(", }");
 
             // pad with extra spaces to allow for header growth and make sure that the start of
             // binary data is aligned to 64 bytes
             if (self.appendable) {
-                try file.writer().writeByteNTimes(0x20, EXTRA_HEADER_SPACE_IN_APPENDABLE_MODE);
+                try writer.writeByteNTimes(0x20, EXTRA_HEADER_SPACE_IN_APPENDABLE_MODE);
             }
-            while ((try file.getPos() - self.start_offset + 1) % 64 != 0) {
-                try file.writer().writeByte(0x20);
+            while ((counter.bytes_written + 1) % 64 != 0) {
+                try writer.writeByte(0x20);
             }
-            try file.writer().writeByte(0x0a); // newline marks the end of the header
+            try writer.writeByte(0x0a); // newline marks the end of the header
+            return counter.bytes_written;
+        }
 
+        fn writeHeader(self: *Self) !void {
+            var file = self.file;
+            try file.seekTo(self.start_offset);
+            _ = try self.writeHeaderToWriter(file.writer().any(), false);
             const bin_start_offset = try file.getPos();
             if (self.bin_start_offset) |x| {
                 if (x != bin_start_offset) {
@@ -177,12 +187,6 @@ pub fn NpyOut(comptime T: type) type {
             } else {
                 self.bin_start_offset = bin_start_offset;
             }
-
-            // update HEADER_LEN before the ASCII header
-            const header_len: u16 = @intCast(bin_start_offset - header_len_off - 2);
-            try file.seekTo(header_len_off);
-            try file.writer().writeInt(u16, header_len, .little);
-            try file.seekTo(bin_start_offset);
         }
 
         pub fn appendSlice(self: *Self, data: []const T) !void {
