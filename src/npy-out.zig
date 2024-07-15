@@ -1,5 +1,6 @@
 const std = @import("std");
 const dtype = @import("dtype.zig");
+const helper = @import("helper.zig");
 
 const MAGIC = "\x93NUMPY";
 const VERSION = "\x01\x00";
@@ -128,13 +129,18 @@ pub fn NpyOut(comptime T: type) type {
                 return error.InvalidHeader;
             }
 
-            // read the len and re-write the header
+            // read the len confirm that the header that we would have written is equal to the
+            // header in the file
             self.len = try parseAsciiHeaderLen(file.reader().any());
-            try self.writeHeader();
-            // TODO: make sure that the new header is exactly equal with the old one, perhaps using
-            // a ChangeDetectionStream for writing
+            try file.seekTo(self.start_offset);
+            var change_detector = helper.changeDetectionWriter(file.reader().any());
+            _ = try self.writeHeaderToWriter(change_detector.writer(), false);
+            if (change_detector.anything_changed) {
+                return error.InvalidHeader;
+            }
 
             // derive the tail offset from length and record size
+            self.bin_start_offset = try file.getPos();
             self.tail_offset = @sizeOf(T) * self.len + self.bin_start_offset.?;
         }
 

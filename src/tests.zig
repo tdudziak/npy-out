@@ -1,6 +1,7 @@
 comptime {
     _ = @import("npy-out.zig");
     _ = @import("dtype.zig");
+    _ = @import("helper.zig");
 }
 const std = @import("std");
 
@@ -290,6 +291,40 @@ test "fixlen_strings.npy" {
     return expectEqualsReferenceAll("fixlen_strings.npy", as_slice);
     // TODO: This gets saved as a matrix of bytes. Is there any scenario where we'd prefer '|S7'
     // instead?
+}
+
+test "appending incompatible file" {
+    const NpyOut = @import("npy-out.zig").NpyOut;
+    var out = try OutDir.init();
+    defer out.deinit();
+    {
+        // create an appendable file of f32 values
+        var fp = try out.dir().createFile("bad_append.npy", .{});
+        defer fp.close();
+        var npy = try NpyOut(f32).init(fp, true);
+        try npy.appendSlice(&[_]f32{ 1.0, 2.0, 3.0 });
+    }
+    {
+        // try to open as f64; should fail
+        var fp = try out.dir().openFile("bad_append.npy", .{ .mode = .read_write });
+        defer fp.close();
+        const ret = NpyOut(f64).init(fp, true);
+        try std.testing.expectEqual(error.InvalidHeader, ret);
+    }
+    {
+        // try to open as f32 but with a different shape; should fail
+        var fp = try out.dir().openFile("bad_append.npy", .{ .mode = .read_write });
+        defer fp.close();
+        const ret = NpyOut([4]f32).init(fp, true);
+        try std.testing.expectEqual(error.InvalidHeader, ret);
+    }
+    {
+        // try to append f32 values; should succeed
+        var fp = try out.dir().openFile("bad_append.npy", .{ .mode = .read_write });
+        defer fp.close();
+        var npy = try NpyOut(f32).init(fp, true);
+        try npy.appendSlice(&[_]f32{ 4.0, 5.0, 6.0 });
+    }
 }
 
 // vim: set tw=100 sw=4 expandtab:
