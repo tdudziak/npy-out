@@ -77,7 +77,7 @@ const EXTRA_HEADER_SPACE_IN_APPENDABLE_MODE = 20;
 
 pub fn NpyOut(comptime T: type) type {
     return struct {
-        file: std.fs.File,
+        stream: std.io.StreamSource,
         start_offset: u64, // offset to the first byte of the MAGIC value
         appendable: bool,
         len: u64, // number of T-type elements written (first dimension of output shape)
@@ -89,7 +89,7 @@ pub fn NpyOut(comptime T: type) type {
         pub fn init(file: std.fs.File, appendable: bool) !Self {
             const off = try file.getPos();
             var result = Self{
-                .file = file,
+                .stream = .{ .file = file },
                 .start_offset = off,
                 .appendable = appendable,
                 .len = 0,
@@ -114,33 +114,33 @@ pub fn NpyOut(comptime T: type) type {
         }
 
         fn parseExistingHeader(self: *Self) !void {
-            var file = self.file;
-            try file.seekTo(self.start_offset);
+            var reader = self.stream.reader();
+            try self.stream.seekTo(self.start_offset);
 
             // verify that the magic value and version are correct
             var magic = std.mem.zeroes([MAGIC.len]u8);
-            _ = try file.readAll(&magic);
+            _ = try reader.readAll(&magic);
             if (!std.mem.eql(u8, MAGIC, &magic)) {
                 return error.InvalidHeader;
             }
             var version = std.mem.zeroes([VERSION.len]u8);
-            _ = try file.readAll(&version);
+            _ = try reader.readAll(&version);
             if (!std.mem.eql(u8, VERSION, &version)) {
                 return error.InvalidHeader;
             }
 
             // read the len confirm that the header that we would have written is equal to the
             // header in the file
-            self.len = try parseAsciiHeaderLen(file.reader().any());
-            try file.seekTo(self.start_offset);
-            var change_detector = helper.changeDetectionWriter(file.reader().any());
+            self.len = try parseAsciiHeaderLen(reader.any());
+            try self.stream.seekTo(self.start_offset);
+            var change_detector = helper.changeDetectionWriter(reader.any());
             _ = try self.writeHeaderToWriter(change_detector.writer(), false);
             if (change_detector.anything_changed) {
                 return error.InvalidHeader;
             }
 
             // derive the tail offset from length and record size
-            self.bin_start_offset = try file.getPos();
+            self.bin_start_offset = try self.stream.getPos();
             self.tail_offset = @sizeOf(T) * self.len + self.bin_start_offset.?;
         }
 
@@ -180,10 +180,9 @@ pub fn NpyOut(comptime T: type) type {
         }
 
         fn writeHeader(self: *Self) !void {
-            var file = self.file;
-            try file.seekTo(self.start_offset);
-            _ = try self.writeHeaderToWriter(file.writer().any(), false);
-            const bin_start_offset = try file.getPos();
+            try self.stream.seekTo(self.start_offset);
+            _ = try self.writeHeaderToWriter(self.stream.writer().any(), false);
+            const bin_start_offset = try self.stream.getPos();
             if (self.bin_start_offset) |x| {
                 if (x != bin_start_offset) {
                     // this leaves the file in corrupted state but should never happen as long as
@@ -205,12 +204,12 @@ pub fn NpyOut(comptime T: type) type {
             try self.writeHeader();
 
             // write the binary data
-            try self.file.seekTo(self.tail_offset);
+            try self.stream.seekTo(self.tail_offset);
             const ptr: [*]const u8 = @ptrCast(data.ptr);
             const bytes_out = @sizeOf(T) * data.len;
-            try self.file.writeAll(ptr[0..bytes_out]);
+            try self.stream.writer().writeAll(ptr[0..bytes_out]);
 
-            self.tail_offset = try self.file.getPos();
+            self.tail_offset = try self.stream.getPos();
         }
 
         pub fn append(self: *Self, sample: T) !void {
