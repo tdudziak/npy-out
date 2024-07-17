@@ -323,9 +323,7 @@ test "datetime64.npy" {
             .ts_D = types.DateTime64(TimeUnit.D).NaT,
         },
     };
-    // FIXME: expectEqualsReferenceSaved() doesn't work since NumPy adds more padding then expected;
-    // the other functions work fine because they increase padding in append-mode
-    return expectEqualsReferenceAppend("datetime64.npy", &data);
+    return expectEqualsReferenceAll("datetime64.npy", &data);
 }
 
 test "appending incompatible file" {

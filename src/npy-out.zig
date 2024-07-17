@@ -70,10 +70,14 @@ fn parseAsciiHeaderLen(reader: std.io.AnyReader) !u64 {
     }
 }
 
-/// Amount of additional padding in the header in "appendable" mode to allow for increasing the
-/// header size. The only variable element is the length (fist dimension of the shape tuple). 20
-/// decimal digits are enough to represent a 64-bit integer.
-const EXTRA_HEADER_SPACE_IN_APPENDABLE_MODE = 20;
+/// Amount of additional padding in the header to allow for increasing the length (first dimension
+/// of the shape tuple) without moving the whole binary data block. This amount is more than enough
+/// to fit a 64-bit integer in decimal ASCII representation.
+///
+/// Incidentally, numpy.save() also adds a similar amount of extra padding to the header, probably
+/// for similar reasons. This is not required by the specs (which only mentions 64-byte alignment)
+/// but means we can conveniently compare byte-by-byte with numpy-generated files in tests.zig.
+const EXTRA_HEADER_SPACE = 22;
 
 pub fn NpyOut(comptime T: type) type {
     return struct {
@@ -169,9 +173,7 @@ pub fn NpyOut(comptime T: type) type {
 
             // pad with extra spaces to allow for header growth and make sure that the start of
             // binary data is aligned to 64 bytes
-            if (self.appendable) {
-                try writer.writeByteNTimes(0x20, EXTRA_HEADER_SPACE_IN_APPENDABLE_MODE);
-            }
+            try writer.writeByteNTimes(0x20, EXTRA_HEADER_SPACE);
             while ((counter.bytes_written + 1) % 64 != 0) {
                 try writer.writeByte(0x20);
             }
