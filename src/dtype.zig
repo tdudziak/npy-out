@@ -19,6 +19,16 @@ pub const DTypeInfo = struct {
     }
 };
 
+pub const EndianessCharacter: u8 = ret: {
+    if (native_endian == .little) {
+        break :ret '<';
+    } else if (native_endian == .big) {
+        break :ret '>';
+    } else {
+        @compileError("Unknown endianness");
+    }
+};
+
 /// Comptime variant of prependShape(). Only used internally in this module to construct dtypes of
 /// multidimensional array types.
 inline fn comptimePrependShape(comptime n: usize, comptime shape: []const u8) []const u8 {
@@ -76,6 +86,25 @@ inline fn namedField(field: std.builtin.Type.StructField) []const u8 {
     } else {
         return comptimePrint("('{s}', {s}, {s})", .{ field.name, dinfo.dtype, dinfo.shape });
     }
+}
+
+inline fn handleCustom(comptime T: type) ?DTypeInfo {
+    // NOTE: this is similar to std.meta.declarations(T), but doesn't cause a compileError if T is
+    // a type that can't contain any declarations (e.g. a pointer type).
+    const decls = switch (@typeInfo(T)) {
+        .Struct => |info| info.decls,
+        .Enum => |info| info.decls,
+        .Union => |info| info.decls,
+        .Opaque => |info| info.decls,
+        else => return null,
+    };
+    inline for (decls) |decl| {
+        if (std.mem.eql(u8, "DType", decl.name)) {
+            const dtype_str: []const u8 = T.DType; // for nicer error messages
+            return DTypeInfo.scalar(dtype_str);
+        }
+    }
+    return null;
 }
 
 inline fn handleArray(T: type) DTypeInfo {
@@ -145,37 +174,27 @@ inline fn handlePrimitive(comptime T: type) ?[]const u8 {
         i8 => return "'|i1'",
         else => {},
     }
-    if (native_endian == .little) {
-        switch (T) {
-            u16 => return "'<u2'",
-            u32 => return "'<u4'",
-            u64 => return "'<u8'",
-            i16 => return "'<i2'",
-            i32 => return "'<i4'",
-            i64 => return "'<i8'",
-            f32 => return "'<f4'",
-            f64 => return "'<f8'",
-            else => {},
-        }
-    } else if (native_endian == .big) {
-        switch (T) {
-            u16 => return "'>u2'",
-            u32 => return "'>u4'",
-            u64 => return "'>u8'",
-            i16 => return "'>i2'",
-            i32 => return "'>i4'",
-            i64 => return "'>i8'",
-            f32 => return "'>f4'",
-            f64 => return "'>f8'",
-            else => {},
-        }
-    } else {
-        @compileError("Unknown endianness");
+    const type_str: ?[]const u8 = switch (T) {
+        u16 => "u2",
+        u32 => "u4",
+        u64 => "u8",
+        i16 => "i2",
+        i32 => "i4",
+        i64 => "i8",
+        f32 => "f4",
+        f64 => "f8",
+        else => null,
+    };
+    if (type_str) |x| {
+        return comptimePrint("'{c}{s}'", .{ EndianessCharacter, x });
     }
     return null;
 }
 
 pub inline fn dtypeOf(comptime T: type) DTypeInfo {
+    if (handleCustom(T)) |dtype| {
+        return dtype;
+    }
     if (handlePrimitive(T)) |dtype| {
         return DTypeInfo.scalar(dtype);
     }
@@ -226,6 +245,18 @@ test "byte strings" {
     };
     try t.expectEqual(8, @sizeOf(Person));
     try t.expectEqualStrings("[('name', '|S7'), ('age', '|u1')]", dtypeOf(Person).dtype);
+}
+
+test "datetime64" {
+    const t = std.testing;
+    const types = @import("types.zig");
+    const Timestamps = extern struct {
+        s: types.DateTime64(types.TimeUnit.s),
+        ms: types.DateTime64(types.TimeUnit.ms),
+        Y: types.DateTime64(types.TimeUnit.Y),
+    };
+    try t.expectEqual(24, @sizeOf(Timestamps));
+    try t.expectEqualStrings("[('s', '<M8[s]'), ('ms', '<M8[ms]'), ('Y', '<M8[Y]')]", dtypeOf(Timestamps).dtype);
 }
 
 test "arrays" {

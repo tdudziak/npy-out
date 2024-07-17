@@ -2,6 +2,7 @@ comptime {
     _ = @import("npy-out.zig");
     _ = @import("dtype.zig");
     _ = @import("helper.zig");
+    _ = @import("types.zig");
 }
 const std = @import("std");
 
@@ -291,6 +292,40 @@ test "fixlen_strings.npy" {
     return expectEqualsReferenceAll("fixlen_strings.npy", as_slice);
     // TODO: This gets saved as a matrix of bytes. Is there any scenario where we'd prefer '|S7'
     // instead?
+}
+
+test "datetime64.npy" {
+    const types = @import("types.zig");
+    const TimeUnit = types.TimeUnit;
+    const datetime64 = types.datetime64;
+    const Timestamps = extern struct {
+        ts_s: types.DateTime64(TimeUnit.s),
+        ts_ms: types.DateTime64(TimeUnit.ms),
+        ts_D: types.DateTime64(TimeUnit.D),
+    };
+    const data = [_]Timestamps{
+        Timestamps{
+            // 2024-07-17 18:46:56 UTC
+            .ts_s = datetime64(1721242016, TimeUnit.s),
+            .ts_ms = datetime64(1721242016000, TimeUnit.ms),
+            .ts_D = datetime64(19921, TimeUnit.D),
+        },
+        Timestamps{
+            // 0001-01-01 00:00:00 UTC
+            .ts_s = datetime64(-62135596800, TimeUnit.s),
+            .ts_ms = datetime64(-62135596800000, TimeUnit.ms),
+            .ts_D = datetime64(-719162, TimeUnit.D),
+        },
+        Timestamps{
+            // Not-a-Time
+            .ts_s = types.DateTime64(TimeUnit.s).NaT,
+            .ts_ms = types.DateTime64(TimeUnit.ms).NaT,
+            .ts_D = types.DateTime64(TimeUnit.D).NaT,
+        },
+    };
+    // FIXME: expectEqualsReferenceSaved() doesn't work since NumPy adds more padding then expected;
+    // the other functions work fine because they increase padding in append-mode
+    return expectEqualsReferenceAppend("datetime64.npy", &data);
 }
 
 test "appending incompatible file" {
