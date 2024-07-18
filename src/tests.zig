@@ -1,5 +1,6 @@
 comptime {
     _ = @import("npy-out.zig");
+    _ = @import("zip-out.zig");
     _ = @import("dtype.zig");
     _ = @import("helper.zig");
     _ = @import("types.zig");
