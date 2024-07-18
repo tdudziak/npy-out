@@ -90,7 +90,7 @@ pub fn NpyOut(comptime T: type) type {
 
         const Self = @This();
 
-        pub fn init(file: std.fs.File, appendable: bool) !Self {
+        pub fn fromFile(file: std.fs.File, appendable: bool) !Self {
             const off = try file.getPos();
             var result = Self{
                 .stream = .{ .file = file },
@@ -114,6 +114,20 @@ pub fn NpyOut(comptime T: type) type {
                 result.tail_offset = result.bin_start_offset.?;
             }
 
+            return result;
+        }
+
+        pub fn fromStreamSource(ssource: std.io.StreamSource) !Self {
+            var result = Self{
+                .stream = ssource,
+                .start_offset = 0,
+                .appendable = false,
+                .len = 0,
+                .tail_offset = 0,
+                .bin_start_offset = null,
+            };
+            try result.writeHeader(); // also updates bin_start_offset
+            result.tail_offset = result.bin_start_offset.?;
             return result;
         }
 
@@ -235,23 +249,10 @@ pub const NpzOut = struct {
     }
 
     pub fn save(self: *Self, name: []const u8, slice: anytype) !void {
-        ensureSliceOrArrayPointer(@TypeOf(slice)); // only needed for nicer error messages
-        const T = @TypeOf(slice.ptr[0]);
-
-        // StreamSource currently doesn't support variable-length buffers, so we create a temporary
-        // file in the current directory instead
-        // FIXME: this is not a real solution
-        var fp_tmp = try std.fs.cwd().createFile(".npy-out.tmp", .{ .read = true });
-        defer fp_tmp.close();
-        var out = try NpyOut(T).init(fp_tmp, false);
-        try out.appendSlice(slice);
-
+        const data = try allocateSave(self.allocator, slice);
+        defer self.allocator.free(data);
         const fileName = try std.fmt.allocPrint(self.allocator, "{s}.npy", .{name});
         defer self.allocator.free(fileName);
-
-        try fp_tmp.seekTo(0);
-        const data = try fp_tmp.readToEndAlloc(self.allocator, std.math.maxInt(usize));
-        defer self.allocator.free(data);
         try self.zip_out.write(fileName, data);
     }
 
@@ -260,10 +261,30 @@ pub const NpzOut = struct {
     }
 };
 
+pub fn allocateSave(allocator: std.mem.Allocator, slice: anytype) ![]const u8 {
+    ensureSliceOrArrayPointer(@TypeOf(slice)); // only needed for nicer error messages
+    const T = @TypeOf(slice.ptr[0]);
+
+    // StreamSource currently doesn't support variable-length buffers but the amount of memory
+    // we need is mostly predictable
+    // FIXME: this still might fail for weird datatypes with long field names
+    const buffer = try allocator.alloc(u8, 1000 + @sizeOf(T) * slice.len);
+    var out = try NpyOut(T).fromStreamSource(.{ .buffer = std.io.fixedBufferStream(buffer) });
+    try out.appendSlice(slice);
+
+    if (allocator.resize(buffer, out.stream.buffer.pos)) {
+        return buffer[0..out.stream.buffer.pos];
+    } else {
+        @panic("Failed to resize buffer");
+        // TODO: is there a realloc or something that would allow to avoid the copy?
+        // return allocator.dupe(u8, buffer[0..out.stream.buffer.pos]);
+    }
+}
+
 pub fn save(file: std.fs.File, slice: anytype) !void {
     ensureSliceOrArrayPointer(@TypeOf(slice)); // only needed for nicer error messages
     const T = @TypeOf(slice.ptr[0]);
-    var out = try NpyOut(T).init(file, false);
+    var out = try NpyOut(T).fromFile(file, false);
     try out.appendSlice(slice);
 }
 

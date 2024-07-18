@@ -92,7 +92,7 @@ fn expectEqualsReferenceAppend(fname: []const u8, slice: anytype) !void {
     defer out.deinit();
     var fp = try out.dir().createFile(fname, .{ .read = true });
     defer fp.close();
-    var npy_out = try @import("npy-out.zig").NpyOut(@TypeOf(slice[0])).init(fp, true);
+    var npy_out = try @import("npy-out.zig").NpyOut(@TypeOf(slice[0])).fromFile(fp, true);
     for (slice) |item| {
         try npy_out.append(item);
     }
@@ -108,13 +108,13 @@ fn expectEqualsReferenceAppendClose(fname: []const u8, slice: anytype) !void {
     {
         var fp = try out.dir().createFile(fname, .{ .read = true });
         defer fp.close();
-        _ = try NpyOut.init(fp, true);
+        _ = try NpyOut.fromFile(fp, true);
     }
 
     for (slice) |item| {
         var fp = try out.dir().openFile(fname, .{ .mode = .read_write });
         defer fp.close();
-        var npy_out = try NpyOut.init(fp, true);
+        var npy_out = try NpyOut.fromFile(fp, true);
         try npy_out.append(item);
     }
 
@@ -130,7 +130,7 @@ fn expectEqualsReferencePairs(fname: []const u8, slice: anytype) !void {
     defer out.deinit();
     var fp = try out.dir().createFile(fname, .{ .read = true });
     defer fp.close();
-    var npy_out = try @import("npy-out.zig").NpyOut(@TypeOf(slice[0])).init(fp, true);
+    var npy_out = try @import("npy-out.zig").NpyOut(@TypeOf(slice[0])).fromFile(fp, true);
 
     var i: usize = 0;
     while (i < slice.len) {
@@ -356,28 +356,28 @@ test "appending incompatible file" {
         // create an appendable file of f32 values
         var fp = try out.dir().createFile("bad_append.npy", .{});
         defer fp.close();
-        var npy = try NpyOut(f32).init(fp, true);
+        var npy = try NpyOut(f32).fromFile(fp, true);
         try npy.appendSlice(&[_]f32{ 1.0, 2.0, 3.0 });
     }
     {
         // try to open as f64; should fail
         var fp = try out.dir().openFile("bad_append.npy", .{ .mode = .read_write });
         defer fp.close();
-        const ret = NpyOut(f64).init(fp, true);
+        const ret = NpyOut(f64).fromFile(fp, true);
         try std.testing.expectEqual(error.InvalidHeader, ret);
     }
     {
         // try to open as f32 but with a different shape; should fail
         var fp = try out.dir().openFile("bad_append.npy", .{ .mode = .read_write });
         defer fp.close();
-        const ret = NpyOut([4]f32).init(fp, true);
+        const ret = NpyOut([4]f32).fromFile(fp, true);
         try std.testing.expectEqual(error.InvalidHeader, ret);
     }
     {
         // try to append f32 values; should succeed
         var fp = try out.dir().openFile("bad_append.npy", .{ .mode = .read_write });
         defer fp.close();
-        var npy = try NpyOut(f32).init(fp, true);
+        var npy = try NpyOut(f32).fromFile(fp, true);
         try npy.appendSlice(&[_]f32{ 4.0, 5.0, 6.0 });
     }
 }
