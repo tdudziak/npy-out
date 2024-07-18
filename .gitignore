@@ -1,3 +1,4 @@
 .zig-cache
 zig-out
 data/*.npy.repr
+data/*.npz.repr

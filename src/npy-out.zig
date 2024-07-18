@@ -220,6 +220,46 @@ pub fn NpyOut(comptime T: type) type {
     };
 }
 
+pub const NpzOut = struct {
+    zip_out: ZipOut,
+    allocator: std.mem.Allocator,
+
+    const ZipOut = @import("zip-out.zig").ZipOut;
+    const Self = @This();
+
+    pub fn init(allocator: std.mem.Allocator, writer: std.io.AnyWriter, compress: bool) !NpzOut {
+        return .{
+            .zip_out = try ZipOut.init(allocator, writer, compress),
+            .allocator = allocator,
+        };
+    }
+
+    pub fn save(self: *Self, name: []const u8, slice: anytype) !void {
+        ensureSliceOrArrayPointer(@TypeOf(slice)); // only needed for nicer error messages
+        const T = @TypeOf(slice.ptr[0]);
+
+        // StreamSource currently doesn't support variable-length buffers, so we create a temporary
+        // file in the current directory instead
+        // FIXME: this is not a real solution
+        var fp_tmp = try std.fs.cwd().createFile(".npy-out.tmp", .{ .read = true });
+        defer fp_tmp.close();
+        var out = try NpyOut(T).init(fp_tmp, false);
+        try out.appendSlice(slice);
+
+        const fileName = try std.fmt.allocPrint(self.allocator, "{s}.npy", .{name});
+        defer self.allocator.free(fileName);
+
+        try fp_tmp.seekTo(0);
+        const data = try fp_tmp.readToEndAlloc(self.allocator, std.math.maxInt(usize));
+        defer self.allocator.free(data);
+        try self.zip_out.write(fileName, data);
+    }
+
+    pub fn deinit(self: *Self) void {
+        self.zip_out.deinit();
+    }
+};
+
 pub fn save(file: std.fs.File, slice: anytype) !void {
     ensureSliceOrArrayPointer(@TypeOf(slice)); // only needed for nicer error messages
     const T = @TypeOf(slice.ptr[0]);

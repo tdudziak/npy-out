@@ -327,6 +327,27 @@ test "datetime64.npy" {
     return expectEqualsReferenceAll("datetime64.npy", &data);
 }
 
+test "compressed.npz" {
+    const allocator = std.testing.allocator;
+    var data: [1000]f32 = undefined;
+    for (0..1000) |i| {
+        data[i] = @as(f32, @floatFromInt(i)) / 100;
+    }
+    var out = try OutDir.init();
+    defer out.deinit();
+    var fp = try out.dir().createFile("compressed.npz", .{ .read = true });
+    defer fp.close();
+    {
+        var npz_out = try @import("npy-out.zig").NpzOut.init(allocator, fp.writer().any(), true);
+        defer npz_out.deinit();
+        try npz_out.save("all_data", data[0..]);
+        try npz_out.save("half_data", data[250..750]);
+        try npz_out.save("empty", data[0..0]);
+    }
+    try fp.seekTo(0);
+    try expectEqualsReferenceFile("compressed.npz", fp);
+}
+
 test "appending incompatible file" {
     const NpyOut = @import("npy-out.zig").NpyOut;
     var out = try OutDir.init();
