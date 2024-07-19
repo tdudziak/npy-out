@@ -338,7 +338,7 @@ test "compressed.npz" {
     var fp = try out.dir().createFile("compressed.npz", .{ .read = true });
     defer fp.close();
     {
-        var npz_out = try @import("npy-out.zig").NpzOut.init(allocator, fp.writer().any(), true);
+        var npz_out = try @import("npy-out.zig").NpzOut.init(allocator, fp, true);
         defer npz_out.deinit();
         try npz_out.save("all_data", data[0..]);
         try npz_out.save("half_data", data[250..750]);

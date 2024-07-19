@@ -11,6 +11,7 @@
 
 const std = @import("std");
 const AnyWriter = std.io.AnyWriter;
+const File = std.fs.File;
 
 const SIG_LFH = "PK\x03\x04";
 const SIG_CDFH = "PK\x01\x02";
@@ -79,34 +80,43 @@ pub const ZipOut = struct {
     allocator: std.mem.Allocator,
     arena: std.heap.ArenaAllocator, // mostly for file names
     entries: std.ArrayList(Entry),
-    writer: std.io.CountingWriter(AnyWriter),
+    file: File,
     compress: bool,
+    offset_start: u64, // file offset to the start of zip data
+    offset_cd: u64, // file offset to the start of central directory
 
     const Self = @This();
 
-    pub fn init(allocator: std.mem.Allocator, writer: AnyWriter, compress: bool) !ZipOut {
-        return .{
+    pub fn init(allocator: std.mem.Allocator, file: File, compress: bool) !ZipOut {
+        const off = try file.getPos();
+        var result = Self{
             .allocator = allocator,
             .arena = std.heap.ArenaAllocator.init(allocator),
             .entries = std.ArrayList(Entry).init(allocator),
-            .writer = std.io.countingWriter(writer),
+            .file = file,
             .compress = compress,
+            .offset_start = off,
+            .offset_cd = off,
         };
+        try result.writeCentralDirectory();
+        return result;
     }
 
     pub fn deinit(self: *Self) void {
-        self.writeCentralDirectory() catch {
-            // do nothing, we cannot fail in deinit()
-            // TODO: should we log or perhaps provide a separate function to write the central
-            // directory?
-        };
+        // the Central Directory is already written; either in init() for an empty file or after the
+        // last write() call
         self.entries.deinit();
         self.arena.deinit();
     }
 
     pub fn write(self: *Self, fileName: []const u8, data: []const u8) !void {
+        // remove the old central directory
+        try self.file.setEndPos(self.offset_cd);
+        try self.file.seekTo(self.offset_cd);
+
+        const writer = self.file.writer();
         const fileNameCopy = try self.arena.allocator().dupe(u8, fileName);
-        const lfh_offset: u32 = @intCast(self.writer.bytes_written);
+        const lfh_offset: u32 = @intCast(self.offset_cd);
         const entry_ptr = try self.entries.addOne();
         var crc = std.hash.crc.Crc32.init();
         crc.update(data);
@@ -119,6 +129,7 @@ pub const ZipOut = struct {
             .localFileHeaderOffset = lfh_offset,
             .unixPermissions = 0o644,
         };
+        var written = false;
         if (self.compress) {
             var buff = std.ArrayList(u8).init(self.allocator);
             defer buff.deinit();
@@ -127,33 +138,41 @@ pub const ZipOut = struct {
             if (buff.items.len < data.len) {
                 entry_ptr.compressionMethod = CompressionMethod.Deflate;
                 entry_ptr.compressedSize = @intCast(buff.items.len);
-                try entry_ptr.writeLocalFileHeader(self.writer.writer().any());
-                try self.writer.writer().writeAll(buff.items);
-                return; // compressed data written
+                try entry_ptr.writeLocalFileHeader(writer.any());
+                try writer.writeAll(buff.items);
+                written = true;
             }
         }
-        // compression disabled or compressed data bigger than original
-        try entry_ptr.writeLocalFileHeader(self.writer.writer().any());
-        try self.writer.writer().writeAll(data);
+        if (!written) {
+            // compression disabled or compressed data bigger than original
+            try entry_ptr.writeLocalFileHeader(writer.any());
+            try writer.writeAll(data);
+        }
+
+        // update the central directory offset and write it
+        self.offset_cd = try self.file.getPos();
+        try self.writeCentralDirectory();
     }
 
+    // Writes the central directory at the file offset `offset_cd`.
     fn writeCentralDirectory(self: *Self) !void {
-        const cdfh_offset: u32 = @intCast(self.writer.bytes_written);
+        try self.file.seekTo(self.offset_cd);
+        const w = self.file.writer();
+
         for (self.entries.items) |entry| {
-            try entry.writeCentralDirectoryHeader(self.writer.writer().any());
+            try entry.writeCentralDirectoryHeader(w.any());
         }
         const cdr_count: u16 = @intCast(self.entries.items.len);
-        const cdr_size: u32 = @intCast(self.writer.bytes_written - cdfh_offset);
+        const cdr_size: u32 = @intCast(try self.file.getPos() - self.offset_cd);
 
         // write the end of central directory record
-        const w = self.writer.writer();
         try w.writeAll(SIG_EOCDR); // header signature
         try w.writeInt(u16, 0, .little); // disk number
         try w.writeInt(u16, 0, .little); // disk where central directory starts
         try w.writeInt(u16, cdr_count, .little); // number of central directory records on this disk
         try w.writeInt(u16, cdr_count, .little); // total number of central directory records
         try w.writeInt(u32, cdr_size, .little); // size of central directory
-        try w.writeInt(u32, cdfh_offset, .little); // offset of central directory
+        try w.writeInt(u32, @intCast(self.offset_cd), .little); // offset of central directory
         try w.writeInt(u16, 0, .little); // zip file comment length
     }
 };

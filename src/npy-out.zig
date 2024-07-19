@@ -241,9 +241,9 @@ pub const NpzOut = struct {
     const ZipOut = @import("zip-out.zig").ZipOut;
     const Self = @This();
 
-    pub fn init(allocator: std.mem.Allocator, writer: std.io.AnyWriter, compress: bool) !NpzOut {
+    pub fn init(allocator: std.mem.Allocator, file: std.fs.File, compress: bool) !NpzOut {
         return .{
-            .zip_out = try ZipOut.init(allocator, writer, compress),
+            .zip_out = try ZipOut.init(allocator, file, compress),
             .allocator = allocator,
         };
     }
