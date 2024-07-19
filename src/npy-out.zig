@@ -275,9 +275,7 @@ pub fn allocateSave(allocator: std.mem.Allocator, slice: anytype) ![]const u8 {
     if (allocator.resize(buffer, out.stream.buffer.pos)) {
         return buffer[0..out.stream.buffer.pos];
     } else {
-        @panic("Failed to resize buffer");
-        // TODO: is there a realloc or something that would allow to avoid the copy?
-        // return allocator.dupe(u8, buffer[0..out.stream.buffer.pos]);
+        return allocator.dupe(u8, buffer[0..out.stream.buffer.pos]);
     }
 }
 
