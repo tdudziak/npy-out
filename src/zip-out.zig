@@ -1,3 +1,14 @@
+//! Zip file output module.
+//!
+//! This module provides a simple API to create zip files with enough support for the format to
+//! generate .npz files similar to ones produced by NumPy. Compression with deflate is supported
+//! optionally.
+//!
+//! The full specification of the format can be found in the Pkware's APPNOTE.TXT file:
+//! https://pkware.cachefly.net/webdocs/casestudies/APPNOTE.TXT
+//!
+//! The references to the sections in the comments are to the version 6.3.9 of the document.
+
 const std = @import("std");
 const AnyWriter = std.io.AnyWriter;
 
@@ -5,9 +16,16 @@ const SIG_LFH = "PK\x03\x04";
 const SIG_CDFH = "PK\x01\x02";
 const SIG_EOCDR = "PK\x05\x06";
 
-const VERSION_MADE = 0x314;
-const VERSION_EXTRACT = 0x14;
+// Upper byte (3) says that file attributes contain Unix permissions. Lower byte (decimal 63)
+// identifies the specification version 6.3. See Section 4.4.2 of the specification.
+const VERSION_MADE = (3 << 8) | 63;
 
+// Minimal version of the specification needed to extract the files. Decimal 20 corresponds to
+// version 2.0 which supports the "deflate" compression method but not much more (e.g. no ZIP64).
+// See Section 4.4.3 of the specification.
+const VERSION_EXTRACT = 20;
+
+// See Section 4.4.5 for other possible values.
 const CompressionMethod = enum(u16) {
     Store = 0,
     Deflate = 8,
@@ -20,12 +38,11 @@ const Entry = struct {
     compressedSize: u32,
     uncompressedSize: u32,
     localFileHeaderOffset: u32,
+    unixPermissions: u16,
 
     const Self = @This();
 
-    pub fn writeLocalFileHeader(self: *const Self, w: AnyWriter) !void {
-        try w.writeAll(SIG_LFH); // header signature
-        try w.writeInt(u16, VERSION_EXTRACT, .little); // version
+    fn writeCommonHeaderPart(self: *const Self, w: AnyWriter) !void {
         try w.writeInt(u16, 0, .little); // general purpose bit flag
         try w.writeInt(u16, @intFromEnum(self.compressionMethod), .little); // compression method
         try w.writeInt(u16, 0, .little); // last modify time
@@ -35,6 +52,12 @@ const Entry = struct {
         try w.writeInt(u32, self.uncompressedSize, .little); // uncompressed size
         try w.writeInt(u16, @intCast(self.fileName.len), .little); // file name length
         try w.writeInt(u16, 0, .little); // extra field length
+    }
+
+    pub fn writeLocalFileHeader(self: *const Self, w: AnyWriter) !void {
+        try w.writeAll(SIG_LFH); // header signature
+        try w.writeInt(u16, VERSION_EXTRACT, .little); // version
+        try writeCommonHeaderPart(self, w);
         try w.writeAll(self.fileName); // file name
     }
 
@@ -42,19 +65,11 @@ const Entry = struct {
         try w.writeAll(SIG_CDFH); // header signature
         try w.writeInt(u16, VERSION_MADE, .little); // version made by
         try w.writeInt(u16, VERSION_EXTRACT, .little); // version needed to extract
-        try w.writeInt(u16, 0, .little); // general purpose bit flag
-        try w.writeInt(u16, @intFromEnum(self.compressionMethod), .little); // compression method
-        try w.writeInt(u16, 0, .little); // last modify time
-        try w.writeInt(u16, 0, .little); // last modify date
-        try w.writeInt(u32, self.crc32, .little); // crc32
-        try w.writeInt(u32, self.compressedSize, .little); // compressed size
-        try w.writeInt(u32, self.uncompressedSize, .little); // uncompressed size
-        try w.writeInt(u16, @intCast(self.fileName.len), .little); // file name length
-        try w.writeInt(u16, 0, .little); // extra field length
+        try writeCommonHeaderPart(self, w);
         try w.writeInt(u16, 0, .little); // file comment length
         try w.writeInt(u16, 0, .little); // disk number start
         try w.writeInt(u16, 0, .little); // internal file attributes
-        try w.writeInt(u32, 0, .little); // external file attributes
+        try w.writeInt(u32, @as(u32, self.unixPermissions) << 16, .little); // external file attributes
         try w.writeInt(u32, self.localFileHeaderOffset, .little); // offset of local file header
         try w.writeAll(self.fileName); // file name
     }
@@ -102,6 +117,7 @@ pub const ZipOut = struct {
             .compressedSize = @intCast(data.len),
             .uncompressedSize = @intCast(data.len),
             .localFileHeaderOffset = lfh_offset,
+            .unixPermissions = 0o644,
         };
         if (self.compress) {
             var buff = std.ArrayList(u8).init(self.allocator);
