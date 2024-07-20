@@ -10,11 +10,11 @@ pub const DTypeInfo = struct {
     /// NumPy shape string, e.g. "(3, 4)" or "()" for scalars.
     shape: []const u8,
 
-    inline fn scalar(dtype: []const u8) DTypeInfo {
+    fn scalar(dtype: []const u8) DTypeInfo {
         return .{ .dtype = dtype, .shape = "()" };
     }
 
-    inline fn isScalar(self: DTypeInfo) bool {
+    fn isScalar(self: DTypeInfo) bool {
         return std.mem.eql(u8, self.shape, "()");
     }
 };
@@ -75,11 +75,11 @@ pub fn prependShape(writer: std.io.AnyWriter, n: usize, shape: []const u8) !void
     return writer.print("({d}, {s})", .{ n, shape[1 .. shape.len - 1] });
 }
 
-inline fn voidField(nbytes: usize) []const u8 {
+fn voidField(nbytes: usize) []const u8 {
     return comptimePrint("('', '|V{d}')", .{nbytes});
 }
 
-inline fn namedField(field: std.builtin.Type.StructField) []const u8 {
+fn namedField(field: std.builtin.Type.StructField) []const u8 {
     const dinfo = dtypeOf(field.type);
     if (dinfo.isScalar()) {
         return comptimePrint("('{s}', {s})", .{ field.name, dinfo.dtype });
@@ -88,7 +88,7 @@ inline fn namedField(field: std.builtin.Type.StructField) []const u8 {
     }
 }
 
-inline fn handleCustom(comptime T: type) ?DTypeInfo {
+fn handleCustom(comptime T: type) ?DTypeInfo {
     // NOTE: this is similar to std.meta.declarations(T), but doesn't cause a compileError if T is
     // a type that can't contain any declarations (e.g. a pointer type).
     const decls = switch (@typeInfo(T)) {
@@ -98,7 +98,7 @@ inline fn handleCustom(comptime T: type) ?DTypeInfo {
         .Opaque => |info| info.decls,
         else => return null,
     };
-    inline for (decls) |decl| {
+    for (decls) |decl| {
         if (std.mem.eql(u8, "DType", decl.name)) {
             const dtype_str: []const u8 = T.DType; // for nicer error messages
             return DTypeInfo.scalar(dtype_str);
@@ -107,7 +107,7 @@ inline fn handleCustom(comptime T: type) ?DTypeInfo {
     return null;
 }
 
-inline fn handleArray(T: type) DTypeInfo {
+fn handleArray(comptime T: type) DTypeInfo {
     const tinfo = @typeInfo(T).Array;
     if (tinfo.child == u8 and tinfo.sentinel != null) {
         const sentinel: *const u8 = @ptrCast(tinfo.sentinel.?);
@@ -116,59 +116,55 @@ inline fn handleArray(T: type) DTypeInfo {
         }
         return DTypeInfo.scalar(comptimePrint("'|S{}'", .{tinfo.len + 1}));
     }
-    comptime {
-        if (handlePrimitive(tinfo.child)) |dtype| {
-            return DTypeInfo{
-                .dtype = dtype,
-                .shape = comptimePrint("({},)", .{tinfo.len}),
-            };
-        }
-        if (@typeInfo(tinfo.child) == .Array) {
-            // call recursively to handle multi-dimensional arrays
-            const sub_dinfo = handleArray(tinfo.child);
-            return DTypeInfo{
-                .dtype = sub_dinfo.dtype,
-                .shape = comptimePrependShape(tinfo.len, sub_dinfo.shape),
-            };
-        }
-        @compileError("NumPy export not supported for arrays of non-primitive types");
+    if (handlePrimitive(tinfo.child)) |dtype| {
+        return DTypeInfo{
+            .dtype = dtype,
+            .shape = comptimePrint("({},)", .{tinfo.len}),
+        };
     }
+    if (@typeInfo(tinfo.child) == .Array) {
+        // call recursively to handle multi-dimensional arrays
+        const sub_dinfo = handleArray(tinfo.child);
+        return DTypeInfo{
+            .dtype = sub_dinfo.dtype,
+            .shape = comptimePrependShape(tinfo.len, sub_dinfo.shape),
+        };
+    }
+    @compileError("NumPy export not supported for arrays of non-primitive types");
 }
 
-inline fn handleStruct(T: type) DTypeInfo {
+fn handleStruct(comptime T: type) DTypeInfo {
     const tinfo = @typeInfo(T).Struct;
     if (tinfo.layout != .@"packed" and tinfo.layout != .@"extern") {
         @compileError("NumPy export only supported for extern or packed structs");
     }
-    return comptime b: {
-        var offset: usize = 0;
-        var result: []const u8 = "[";
-        for (tinfo.fields, 0..) |field, i| {
-            if (i != 0) {
-                result = result ++ ", ";
-            }
-            const field_offset = @offsetOf(T, field.name);
-            if (field_offset != offset) {
-                if (field_offset < offset) {
-                    @compileError("Negative padding detected (?)");
-                }
-                // padding is supported by NumPy via unnamed void-type fields
-                result = result ++ voidField(field_offset - offset) ++ ", ";
-                offset = field_offset;
-            }
-            result = result ++ namedField(field);
-            offset += @sizeOf(field.type);
+    var offset: usize = 0;
+    var result: []const u8 = "[";
+    for (tinfo.fields, 0..) |field, i| {
+        if (i != 0) {
+            result = result ++ ", ";
         }
-        if (offset != @sizeOf(T)) {
-            // extra padding at the end, might even happen with packed structs!
-            result = result ++ ", " ++ voidField(@sizeOf(T) - offset);
+        const field_offset = @offsetOf(T, field.name);
+        if (field_offset != offset) {
+            if (field_offset < offset) {
+                @compileError("Negative padding detected (?)");
+            }
+            // padding is supported by NumPy via unnamed void-type fields
+            result = result ++ voidField(field_offset - offset) ++ ", ";
+            offset = field_offset;
         }
-        result = result ++ "]";
-        break :b DTypeInfo.scalar(result);
-    };
+        result = result ++ namedField(field);
+        offset += @sizeOf(field.type);
+    }
+    if (offset != @sizeOf(T)) {
+        // extra padding at the end, might even happen with packed structs!
+        result = result ++ ", " ++ voidField(@sizeOf(T) - offset);
+    }
+    result = result ++ "]";
+    return DTypeInfo.scalar(result);
 }
 
-inline fn handlePrimitive(comptime T: type) ?[]const u8 {
+fn handlePrimitive(comptime T: type) ?[]const u8 {
     switch (T) {
         u8 => return "'|u1'",
         i8 => return "'|i1'",
@@ -192,16 +188,18 @@ inline fn handlePrimitive(comptime T: type) ?[]const u8 {
 }
 
 pub inline fn dtypeOf(comptime T: type) DTypeInfo {
-    if (handleCustom(T)) |dtype| {
-        return dtype;
-    }
-    if (handlePrimitive(T)) |dtype| {
-        return DTypeInfo.scalar(dtype);
-    }
-    switch (@typeInfo(T)) {
-        .Struct => return handleStruct(T),
-        .Array => return handleArray(T),
-        else => @compileError(comptimePrint("NumPy export not supported for type: {}", .{T})),
+    comptime {
+        if (handleCustom(T)) |dtype| {
+            return dtype;
+        }
+        if (handlePrimitive(T)) |dtype| {
+            return DTypeInfo.scalar(dtype);
+        }
+        switch (@typeInfo(T)) {
+            .Struct => return handleStruct(T),
+            .Array => return handleArray(T),
+            else => @compileError(comptimePrint("NumPy export not supported for type: {}", .{T})),
+        }
     }
 }
 
