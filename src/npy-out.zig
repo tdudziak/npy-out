@@ -1,6 +1,7 @@
 const std = @import("std");
 const dtype = @import("dtype.zig");
 const helper = @import("helper.zig");
+
 pub const types = @import("types.zig");
 pub const ZipOut = @import("zip-out.zig").ZipOut;
 
@@ -136,7 +137,7 @@ fn writeData(comptime T: type, writer: AnyWriter, data: []const T) !void {
 
 /// Allows to write output .npy files in a streaming fashion.
 ///
-/// Individual records (see append()) or whole slices (see appendSlice()) can be appended to the
+/// Individual records (see `append()`) or whole slices (see `appendSlice()`) can be appended to the
 /// output file. In order to accomplish that, the header will change after every append. If the
 /// whole data is available at once, consider using the save() function instead.
 pub fn NpyOut(comptime T: type) type {
@@ -257,6 +258,10 @@ pub fn NpyOut(comptime T: type) type {
     };
 }
 
+/// Creates and writes .npz files.
+///
+/// These files are ZIP archives that can be created with `numpy.savez()` and
+/// `numpy.savez_compressed()` in Python and contain multiple .npy files.
 pub const NpzOut = struct {
     zip_out: ZipOut,
     allocator: std.mem.Allocator,
@@ -270,6 +275,10 @@ pub const NpzOut = struct {
         };
     }
 
+    /// Adds another value to the archive.
+    ///
+    /// The extension ".npy" will be appended to the given name following the Python API. The
+    /// argument `slice` works the same way as in the `save()` function.
     pub fn save(self: *Self, name: []const u8, slice: anytype) !void {
         const data = try allocateSave(self.allocator, slice);
         defer self.allocator.free(data);
@@ -283,6 +292,10 @@ pub const NpzOut = struct {
     }
 };
 
+/// Forms a full .npy file in newly allocated memory.
+///
+/// The result is owned by the caller and needs to be freed using the allocator passed to the
+/// function. The `slice` argument works the same way as in the `save()` function.
 pub fn allocateSave(allocator: std.mem.Allocator, slice: anytype) ![]const u8 {
     ensureSliceOrArrayPointer(@TypeOf(slice)); // only needed for nicer error messages
     const T = @TypeOf(slice.ptr[0]);
@@ -297,6 +310,11 @@ pub fn allocateSave(allocator: std.mem.Allocator, slice: anytype) ![]const u8 {
     return buf.toOwnedSlice();
 }
 
+/// Writes a slice to a given writer in .npy format.
+///
+/// Corresponds to `numpy.save()` in Python. The argument `slice` can be a slice or a pointer to an
+/// array of supported basic types or structures. Structures are supported as long as they're marked
+/// as "extern" or "packed" and there is a corresponding NumPy type with the exact same layout.
 pub fn save(writer: AnyWriter, slice: anytype) !void {
     ensureSliceOrArrayPointer(@TypeOf(slice)); // only needed for nicer error messages
     const T = @TypeOf(slice.ptr[0]);

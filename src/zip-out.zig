@@ -76,6 +76,11 @@ const Entry = struct {
     }
 };
 
+/// Creates and writes .zip files.
+///
+/// Compression via "deflate" is supported optionally, if requested during `init()`. Calling
+/// `deinit()` will deallocate all memory used by the instance but does not affect the output file,
+/// which is left in a valid state after every call to `write()`.
 pub const ZipOut = struct {
     allocator: std.mem.Allocator,
     arena: std.heap.ArenaAllocator, // mostly for file names
