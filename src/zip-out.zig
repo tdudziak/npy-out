@@ -55,14 +55,14 @@ const Entry = struct {
         try w.writeInt(u16, 0, .little); // extra field length
     }
 
-    pub fn writeLocalFileHeader(self: *const Self, w: AnyWriter) !void {
+    fn writeLocalFileHeader(self: *const Self, w: AnyWriter) !void {
         try w.writeAll(SIG_LFH); // header signature
         try w.writeInt(u16, VERSION_EXTRACT, .little); // version
         try writeCommonHeaderPart(self, w);
         try w.writeAll(self.fileName); // file name
     }
 
-    pub fn writeCentralDirectoryHeader(self: *const Self, w: AnyWriter) !void {
+    fn writeCentralDirectoryHeader(self: *const Self, w: AnyWriter) !void {
         try w.writeAll(SIG_CDFH); // header signature
         try w.writeInt(u16, VERSION_MADE, .little); // version made by
         try w.writeInt(u16, VERSION_EXTRACT, .little); // version needed to extract

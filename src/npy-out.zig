@@ -1,6 +1,8 @@
 const std = @import("std");
 const dtype = @import("dtype.zig");
 const helper = @import("helper.zig");
+pub const types = @import("types.zig");
+pub const ZipOut = @import("zip-out.zig").ZipOut;
 
 const AnyWriter = std.io.AnyWriter;
 
@@ -259,7 +261,6 @@ pub const NpzOut = struct {
     zip_out: ZipOut,
     allocator: std.mem.Allocator,
 
-    const ZipOut = @import("zip-out.zig").ZipOut;
     const Self = @This();
 
     pub fn init(allocator: std.mem.Allocator, file: std.fs.File, compress: bool) !NpzOut {
