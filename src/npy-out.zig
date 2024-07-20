@@ -6,6 +6,8 @@ pub const types = @import("types.zig");
 pub const ZipOut = @import("zip-out.zig").ZipOut;
 
 const AnyWriter = std.io.AnyWriter;
+const Allocator = std.mem.Allocator;
+const File = std.fs.File;
 
 const MAGIC = "\x93NUMPY";
 const VERSION = "\x01\x00";
@@ -150,7 +152,7 @@ pub fn NpyOut(comptime T: type) type {
 
         const Self = @This();
 
-        pub fn fromFile(file: std.fs.File) !Self {
+        pub fn fromFile(file: File) !Self {
             const off = try file.getPos();
             var result = Self{
                 .stream = .{ .file = file },
@@ -264,11 +266,11 @@ pub fn NpyOut(comptime T: type) type {
 /// `numpy.savez_compressed()` in Python and contain multiple .npy files.
 pub const NpzOut = struct {
     zip_out: ZipOut,
-    allocator: std.mem.Allocator,
+    allocator: Allocator,
 
     const Self = @This();
 
-    pub fn init(allocator: std.mem.Allocator, file: std.fs.File, compress: bool) !NpzOut {
+    pub fn init(allocator: Allocator, file: File, compress: bool) !NpzOut {
         return .{
             .zip_out = try ZipOut.init(allocator, file, compress),
             .allocator = allocator,
@@ -296,7 +298,7 @@ pub const NpzOut = struct {
 ///
 /// The result is owned by the caller and needs to be freed using the allocator passed to the
 /// function. The `slice` argument works the same way as in the `save()` function.
-pub fn allocateSave(allocator: std.mem.Allocator, slice: anytype) ![]const u8 {
+pub fn allocateSave(allocator: Allocator, slice: anytype) ![]const u8 {
     ensureSliceOrArrayPointer(@TypeOf(slice)); // only needed for nicer error messages
     const T = @TypeOf(slice.ptr[0]);
     var buf = std.ArrayList(u8).init(allocator);
@@ -320,6 +322,35 @@ pub fn save(writer: AnyWriter, slice: anytype) !void {
     const T = @TypeOf(slice.ptr[0]);
     _ = try writeHeader(T, writer, slice.len, false);
     try writeData(T, writer, slice);
+}
+
+/// Writes a bunch of values as an .npz archive.
+///
+/// Works like `numpy.savez()` and `numpy.savez_compressed() in Python. The argument can be an
+/// anonymous struct or a tuple. Following the Python API, the keys in the tuple case will be named
+/// "arr_0", "arr_1", etc. The values should be slices of pointer arrays similar to the `save()`
+/// argument.
+pub fn savez(file: File, allocator: Allocator, compressed: bool, args: anytype) !void {
+    var npz_out = try NpzOut.init(allocator, file, compressed);
+    defer npz_out.deinit();
+    inline for (comptime std.meta.fieldNames(@TypeOf(args))) |field_name| {
+        const key = comptime key: {
+            var is_number = true;
+            for (field_name) |c| {
+                if (!std.ascii.isDigit(c)) {
+                    is_number = false;
+                    break;
+                }
+            }
+            if (is_number) {
+                break :key std.fmt.comptimePrint("arr_{s}", .{field_name});
+            } else {
+                break :key field_name;
+            }
+        };
+        const value = @field(args, field_name);
+        try npz_out.save(key, value);
+    }
 }
 
 test "parseAsciiHeaderLen()" {

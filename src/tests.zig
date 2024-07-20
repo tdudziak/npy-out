@@ -328,6 +328,7 @@ test "datetime64.npy" {
 }
 
 test "compressed.npz" {
+    const npy_out = @import("npy-out.zig");
     const allocator = std.testing.allocator;
     var data: [1000]f32 = undefined;
     for (0..1000) |i| {
@@ -335,10 +336,11 @@ test "compressed.npz" {
     }
     var out = try OutDir.init();
     defer out.deinit();
+
     var fp = try out.dir().createFile("compressed.npz", .{ .read = true });
     defer fp.close();
     {
-        var npz_out = try @import("npy-out.zig").NpzOut.init(allocator, fp, true);
+        var npz_out = try npy_out.NpzOut.init(allocator, fp, true);
         defer npz_out.deinit();
         try npz_out.save("all_data", data[0..]);
         try npz_out.save("half_data", data[250..750]);
@@ -346,6 +348,40 @@ test "compressed.npz" {
     }
     try fp.seekTo(0);
     try expectEqualsReferenceFile("compressed.npz", fp);
+
+    // truncate the file
+    try fp.seekTo(0);
+    try fp.setEndPos(0);
+
+    try npy_out.savez(fp, allocator, true, .{
+        .all_data = data[0..],
+        .half_data = data[250..750],
+        .empty = data[0..0],
+    });
+    try fp.seekTo(0);
+    try expectEqualsReferenceFile("compressed.npz", fp);
+}
+
+test "uncompressed.npz" {
+    const npy_out = @import("npy-out.zig");
+    const copy = std.mem.copyForwards;
+    const allocator = std.testing.allocator;
+    var out = try OutDir.init();
+    defer out.deinit();
+
+    const temp_data = [_]f32{ 25.2, 27.8, 30.1, 27.3 };
+    var color_data = std.mem.zeroes([4][6:0]u8);
+    copy(u8, &color_data[0], "red");
+    copy(u8, &color_data[1], "green");
+    copy(u8, &color_data[2], "blue");
+    copy(u8, &color_data[3], "yellow");
+    const byte_data = [_]u8{ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9 };
+
+    var fp = try out.dir().createFile("uncompressed.npz", .{ .read = true });
+    defer fp.close();
+
+    try npy_out.savez(fp, allocator, false, .{ &temp_data, &color_data, &byte_data });
+    try expectEqualsReferenceFile("uncompressed.npz", fp);
 }
 
 test "appending incompatible file" {
