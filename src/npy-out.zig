@@ -2,6 +2,8 @@ const std = @import("std");
 const dtype = @import("dtype.zig");
 const helper = @import("helper.zig");
 
+const AnyWriter = std.io.AnyWriter;
+
 const MAGIC = "\x93NUMPY";
 const VERSION = "\x01\x00";
 
@@ -79,23 +81,77 @@ fn parseAsciiHeaderLen(reader: std.io.AnyReader) !u64 {
 /// but means we can conveniently compare byte-by-byte with numpy-generated files in tests.zig.
 const EXTRA_HEADER_SPACE = 22;
 
+/// Offset at which the 16-bit header length field is located in the header.
+const HLEN_OFFSET = 8;
+
+/// Writes the NPY header to a given writer.
+///
+/// Returns the header size in bytes, as it appears in the `hlen` field, i.e. without the magic
+/// values and the header length field itself.
+///
+/// If `dummy_hlen` is set to true, the header length field will in the output will be set to 0 and
+/// needs to be updated afterwards. When set to false, the header will be generated twice to
+/// calculate its length first which is less efficient but doesn't require further seeking in the
+/// output file or buffer.
+fn writeHeader(comptime T: type, _writer: AnyWriter, len: u64, dummy_hlen: bool) !u16 {
+    const dtinfo = dtype.dtypeOf(T);
+    var counter = std.io.countingWriter(_writer);
+    var w = counter.writer().any();
+    try w.writeAll(MAGIC);
+    try w.writeAll(VERSION);
+
+    // determine and write HEADER_LEN by calling recursively if needed
+    if (dummy_hlen) {
+        try w.writeInt(u16, 0, .little);
+    } else {
+        const hlen = try writeHeader(T, std.io.null_writer.any(), len, true);
+        // TODO: check for overflow and produce header in newer format
+        try w.writeInt(u16, @intCast(hlen), .little);
+    }
+
+    // write the header ASCII string
+    try w.writeAll("{'descr': ");
+    try w.writeAll(dtinfo.dtype);
+    try w.writeAll(", 'fortran_order': False, 'shape': ");
+    try dtype.prependShape(w, len, dtinfo.shape);
+    try w.writeAll(", }");
+
+    // pad with extra spaces to allow for header growth and make sure that the start of
+    // binary data is aligned to 64 bytes
+    try w.writeByteNTimes(0x20, EXTRA_HEADER_SPACE);
+    while ((counter.bytes_written + 1) % 64 != 0) {
+        try w.writeByte(0x20);
+    }
+    try w.writeByte(0x0a); // newline marks the end of the header
+    return @intCast(counter.bytes_written - 10); // TODO: handle bigger headers in new format?
+}
+
+fn writeData(comptime T: type, writer: AnyWriter, data: []const T) !void {
+    const ptr: [*]const u8 = @ptrCast(data.ptr);
+    const bytes_out = @sizeOf(T) * data.len;
+    try writer.writeAll(ptr[0..bytes_out]);
+}
+
+/// Allows to write output .npy files in a streaming fashion.
+///
+/// Individual records (see append()) or whole slices (see appendSlice()) can be appended to the
+/// output file. In order to accomplish that, the header will change after every append. If the
+/// whole data is available at once, consider using the save() function instead.
 pub fn NpyOut(comptime T: type) type {
     return struct {
         stream: std.io.StreamSource,
         start_offset: u64, // offset to the first byte of the MAGIC value
-        appendable: bool,
         len: u64, // number of T-type elements written (first dimension of output shape)
         tail_offset: u64, // offset to the first byte after the last written data
         bin_start_offset: ?u64, // offset to the first byte of the binary data
 
         const Self = @This();
 
-        pub fn fromFile(file: std.fs.File, appendable: bool) !Self {
+        pub fn fromFile(file: std.fs.File) !Self {
             const off = try file.getPos();
             var result = Self{
                 .stream = .{ .file = file },
                 .start_offset = off,
-                .appendable = appendable,
                 .len = 0,
                 .tail_offset = 0,
                 .bin_start_offset = null,
@@ -104,13 +160,10 @@ pub fn NpyOut(comptime T: type) type {
             try file.seekFromEnd(0);
             if (off != try file.getPos()) {
                 // there is existing data in the file
-                if (!appendable) {
-                    return error.FileNotEmpty;
-                }
                 try result.parseExistingHeader(); // updates len and offsets
             } else {
                 // new file; write full header
-                try result.writeHeader(); // also updates bin_start_offset
+                try result.updateHeader(); // also updates bin_start_offset
                 result.tail_offset = result.bin_start_offset.?;
             }
 
@@ -121,12 +174,11 @@ pub fn NpyOut(comptime T: type) type {
             var result = Self{
                 .stream = ssource,
                 .start_offset = 0,
-                .appendable = false,
                 .len = 0,
                 .tail_offset = 0,
                 .bin_start_offset = null,
             };
-            try result.writeHeader(); // also updates bin_start_offset
+            try result.updateHeader(); // also updates bin_start_offset
             result.tail_offset = result.bin_start_offset.?;
             return result;
         }
@@ -152,7 +204,7 @@ pub fn NpyOut(comptime T: type) type {
             self.len = try parseAsciiHeaderLen(reader.any());
             try self.stream.seekTo(self.start_offset);
             var change_detector = helper.changeDetectionWriter(reader.any());
-            _ = try self.writeHeaderToWriter(change_detector.writer(), false);
+            _ = try writeHeader(T, change_detector.writer(), self.len, false);
             if (change_detector.anything_changed) {
                 return error.InvalidHeader;
             }
@@ -162,47 +214,20 @@ pub fn NpyOut(comptime T: type) type {
             self.tail_offset = @sizeOf(T) * self.len + self.bin_start_offset.?;
         }
 
-        fn writeHeaderToWriter(self: *const Self, in_writer: std.io.AnyWriter, dummy_hlen: bool) !usize {
-            const dtinfo = dtype.dtypeOf(T);
-            var counter = std.io.countingWriter(in_writer);
-            var writer = counter.writer().any();
-            try writer.writeAll(MAGIC);
-            try writer.writeAll(VERSION);
-
-            // determine and write HEADER_LEN by calling recursively if needed
-            if (dummy_hlen) {
-                try writer.writeInt(u16, 0, .little);
-            } else {
-                const hlen = try self.writeHeaderToWriter(std.io.null_writer.any(), true) - 10;
-                // TODO: check for overflow and produce header in newer format
-                try writer.writeInt(u16, @intCast(hlen), .little);
-            }
-
-            // write the header ASCII string
-            try writer.writeAll("{'descr': ");
-            try writer.writeAll(dtinfo.dtype);
-            try writer.writeAll(", 'fortran_order': False, 'shape': ");
-            try dtype.prependShape(writer, self.len, dtinfo.shape);
-            try writer.writeAll(", }");
-
-            // pad with extra spaces to allow for header growth and make sure that the start of
-            // binary data is aligned to 64 bytes
-            try writer.writeByteNTimes(0x20, EXTRA_HEADER_SPACE);
-            while ((counter.bytes_written + 1) % 64 != 0) {
-                try writer.writeByte(0x20);
-            }
-            try writer.writeByte(0x0a); // newline marks the end of the header
-            return counter.bytes_written;
-        }
-
-        fn writeHeader(self: *Self) !void {
+        fn updateHeader(self: *Self) !void {
             try self.stream.seekTo(self.start_offset);
-            _ = try self.writeHeaderToWriter(self.stream.writer().any(), false);
+            const hlen: u16 = try writeHeader(T, self.stream.writer().any(), self.len, true);
             const bin_start_offset = try self.stream.getPos();
+
+            // update the header length field; typically will only be different when the header is
+            // written for the first time
+            try self.stream.seekTo(self.start_offset + HLEN_OFFSET);
+            try self.stream.writer().writeInt(u16, hlen, .little);
+
             if (self.bin_start_offset) |x| {
                 if (x != bin_start_offset) {
                     // this leaves the file in corrupted state but should never happen as long as
-                    // EXTRA_HEADER_SPACE_IN_APPENDABLE_MODE is big enough
+                    // EXTRA_HEADER_SPACE is big enough
                     @panic("NPY header overlaps with binary data");
                 }
             } else {
@@ -211,13 +236,9 @@ pub fn NpyOut(comptime T: type) type {
         }
 
         pub fn appendSlice(self: *Self, data: []const T) !void {
-            if (!self.appendable and self.len != 0) {
-                return error.NotAppendable;
-            }
-
             // update the length and write the header
             self.len += data.len;
-            try self.writeHeader();
+            try self.updateHeader();
 
             // write the binary data
             try self.stream.seekTo(self.tail_offset);
@@ -264,26 +285,22 @@ pub const NpzOut = struct {
 pub fn allocateSave(allocator: std.mem.Allocator, slice: anytype) ![]const u8 {
     ensureSliceOrArrayPointer(@TypeOf(slice)); // only needed for nicer error messages
     const T = @TypeOf(slice.ptr[0]);
+    var buf = std.ArrayList(u8).init(allocator);
 
-    // StreamSource currently doesn't support variable-length buffers but the amount of memory
-    // we need is mostly predictable
-    // FIXME: this still might fail for weird datatypes with long field names
-    const buffer = try allocator.alloc(u8, 1000 + @sizeOf(T) * slice.len);
-    var out = try NpyOut(T).fromStreamSource(.{ .buffer = std.io.fixedBufferStream(buffer) });
-    try out.appendSlice(slice);
+    // we could simply call save(buf.writer...) but we can save a little bit of time by writing the
+    // header with dummy length field value first and fixing it afterwards
+    const hlen: u16 = try writeHeader(T, buf.writer().any(), slice.len, true);
+    @memcpy(buf.items[HLEN_OFFSET .. HLEN_OFFSET + 2], &std.mem.toBytes(hlen));
+    try writeData(T, buf.writer().any(), slice);
 
-    if (allocator.resize(buffer, out.stream.buffer.pos)) {
-        return buffer[0..out.stream.buffer.pos];
-    } else {
-        return allocator.dupe(u8, buffer[0..out.stream.buffer.pos]);
-    }
+    return buf.toOwnedSlice();
 }
 
-pub fn save(file: std.fs.File, slice: anytype) !void {
+pub fn save(writer: AnyWriter, slice: anytype) !void {
     ensureSliceOrArrayPointer(@TypeOf(slice)); // only needed for nicer error messages
     const T = @TypeOf(slice.ptr[0]);
-    var out = try NpyOut(T).fromFile(file, false);
-    try out.appendSlice(slice);
+    _ = try writeHeader(T, writer, slice.len, false);
+    try writeData(T, writer, slice);
 }
 
 test "parseAsciiHeaderLen()" {
