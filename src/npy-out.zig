@@ -110,8 +110,7 @@ fn writeHeader(comptime T: type, _writer: AnyWriter, len: u64, dummy_hlen: bool)
         try w.writeInt(u16, 0, .little);
     } else {
         const hlen = try writeHeader(T, std.io.null_writer.any(), len, true);
-        // TODO: check for overflow and produce header in newer format
-        try w.writeInt(u16, @intCast(hlen), .little);
+        try w.writeInt(u16, hlen, .little);
     }
 
     // write the header ASCII string
@@ -128,7 +127,15 @@ fn writeHeader(comptime T: type, _writer: AnyWriter, len: u64, dummy_hlen: bool)
         try w.writeByte(0x20);
     }
     try w.writeByte(0x0a); // newline marks the end of the header
-    return @intCast(counter.bytes_written - 10); // TODO: handle bigger headers in new format?
+
+    const hlen = counter.bytes_written - 10;
+    if (hlen > std.math.maxInt(u16)) {
+        // This means that the ASCII representation of the NumPy data type is too long for the
+        // length of the header to fit in u16. This can happen in some unusual cases and is
+        // supported in a newer version of the NPY format but this is not implemented here.
+        return error.UnsupportedDataType;
+    }
+    return @intCast(hlen);
 }
 
 fn writeData(comptime T: type, writer: AnyWriter, data: []const T) !void {

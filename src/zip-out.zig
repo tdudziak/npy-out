@@ -26,6 +26,27 @@ const VERSION_MADE = (3 << 8) | 63;
 // See Section 4.4.3 of the specification.
 const VERSION_EXTRACT = 20;
 
+inline fn offsetCast(offset: u64) !u32 {
+    if (offset > std.math.maxInt(u32)) {
+        return error.OutputFileTooLarge;
+    }
+    return @intCast(offset);
+}
+
+inline fn countCast(count: usize) !u16 {
+    if (count > std.math.maxInt(u16)) {
+        return error.TooManyFilesInZip;
+    }
+    return @intCast(count);
+}
+
+inline fn inputSizeCast(size: usize) !u32 {
+    if (size > std.math.maxInt(u32)) {
+        return error.InputFileTooLarge;
+    }
+    return @intCast(size);
+}
+
 // See Section 4.4.5 for other possible values.
 const CompressionMethod = enum(u16) {
     Store = 0,
@@ -44,6 +65,9 @@ const Entry = struct {
     const Self = @This();
 
     fn writeCommonHeaderPart(self: *const Self, w: AnyWriter) !void {
+        if (self.fileName.len > std.math.maxInt(u16)) {
+            return error.FileNameTooLong;
+        }
         try w.writeInt(u16, 0, .little); // general purpose bit flag
         try w.writeInt(u16, @intFromEnum(self.compressionMethod), .little); // compression method
         try w.writeInt(u16, 0, .little); // last modify time
@@ -119,9 +143,11 @@ pub const ZipOut = struct {
         try self.file.setEndPos(self.offset_cd);
         try self.file.seekTo(self.offset_cd);
 
+        const lfh_offset: u32 = try offsetCast(self.offset_cd);
+        const uncompressedSize: u32 = try inputSizeCast(data.len);
+
         const writer = self.file.writer();
         const fileNameCopy = try self.arena.allocator().dupe(u8, fileName);
-        const lfh_offset: u32 = @intCast(self.offset_cd);
         const entry_ptr = try self.entries.addOne();
         var crc = std.hash.crc.Crc32.init();
         crc.update(data);
@@ -129,8 +155,8 @@ pub const ZipOut = struct {
             .crc32 = crc.final(),
             .fileName = fileNameCopy,
             .compressionMethod = CompressionMethod.Store,
-            .compressedSize = @intCast(data.len),
-            .uncompressedSize = @intCast(data.len),
+            .compressedSize = uncompressedSize,
+            .uncompressedSize = uncompressedSize,
             .localFileHeaderOffset = lfh_offset,
             .unixPermissions = 0o644,
         };
@@ -140,9 +166,10 @@ pub const ZipOut = struct {
             defer buff.deinit();
             var data_stream = std.io.fixedBufferStream(data);
             try std.compress.flate.deflate.compress(.raw, data_stream.reader(), buff.writer(), .{});
-            if (buff.items.len < data.len) {
+            const compressedSize = try inputSizeCast(buff.items.len);
+            if (compressedSize < uncompressedSize) {
                 entry_ptr.compressionMethod = CompressionMethod.Deflate;
-                entry_ptr.compressedSize = @intCast(buff.items.len);
+                entry_ptr.compressedSize = compressedSize;
                 try entry_ptr.writeLocalFileHeader(writer.any());
                 try writer.writeAll(buff.items);
                 written = true;
@@ -167,8 +194,10 @@ pub const ZipOut = struct {
         for (self.entries.items) |entry| {
             try entry.writeCentralDirectoryHeader(w.any());
         }
-        const cdr_count: u16 = @intCast(self.entries.items.len);
-        const cdr_size: u32 = @intCast(try self.file.getPos() - self.offset_cd);
+
+        const cdr_count: u16 = try countCast(self.entries.items.len);
+        const cdr_size: u32 = try offsetCast(try self.file.getPos() - self.offset_cd);
+        const offset_cd: u32 = try offsetCast(self.offset_cd);
 
         // write the end of central directory record
         try w.writeAll(SIG_EOCDR); // header signature
@@ -177,7 +206,7 @@ pub const ZipOut = struct {
         try w.writeInt(u16, cdr_count, .little); // number of central directory records on this disk
         try w.writeInt(u16, cdr_count, .little); // total number of central directory records
         try w.writeInt(u32, cdr_size, .little); // size of central directory
-        try w.writeInt(u32, @intCast(self.offset_cd), .little); // offset of central directory
+        try w.writeInt(u32, offset_cd, .little); // offset of central directory
         try w.writeInt(u16, 0, .little); // zip file comment length
     }
 };
