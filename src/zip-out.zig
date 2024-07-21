@@ -10,8 +10,8 @@
 //! The references to the sections in the comments are to the version 6.3.9 of the document.
 
 const std = @import("std");
-const AnyWriter = std.io.AnyWriter;
 const File = std.fs.File;
+const Writer = File.Writer;
 
 const SIG_LFH = "PK\x03\x04";
 const SIG_CDFH = "PK\x01\x02";
@@ -26,21 +26,32 @@ const VERSION_MADE = (3 << 8) | 63;
 // See Section 4.4.3 of the specification.
 const VERSION_EXTRACT = 20;
 
-inline fn offsetCast(offset: u64) !u32 {
+const Error = Writer.Error || File.GetSeekPosError || error{
+    InputFileTooLarge,
+    OutputFileTooLarge,
+    TooManyFilesInZip,
+    FileNameTooLong,
+};
+
+// ZipOut.write() is the only function that truncates or allocates, so it can fail in some other
+// ways.
+const WriteError = Error || File.SetEndPosError || std.mem.Allocator.Error || error {CompressionFailed};
+
+inline fn offsetCast(offset: u64) Error!u32 {
     if (offset > std.math.maxInt(u32)) {
         return error.OutputFileTooLarge;
     }
     return @intCast(offset);
 }
 
-inline fn countCast(count: usize) !u16 {
+inline fn countCast(count: usize) Error!u16 {
     if (count > std.math.maxInt(u16)) {
         return error.TooManyFilesInZip;
     }
     return @intCast(count);
 }
 
-inline fn inputSizeCast(size: usize) !u32 {
+inline fn inputSizeCast(size: usize) Error!u32 {
     if (size > std.math.maxInt(u32)) {
         return error.InputFileTooLarge;
     }
@@ -64,7 +75,7 @@ const Entry = struct {
 
     const Self = @This();
 
-    fn writeCommonHeaderPart(self: *const Self, w: AnyWriter) !void {
+    fn writeCommonHeaderPart(self: *const Self, w: Writer) Error!void {
         if (self.fileName.len > std.math.maxInt(u16)) {
             return error.FileNameTooLong;
         }
@@ -79,14 +90,14 @@ const Entry = struct {
         try w.writeInt(u16, 0, .little); // extra field length
     }
 
-    fn writeLocalFileHeader(self: *const Self, w: AnyWriter) !void {
+    fn writeLocalFileHeader(self: *const Self, w: Writer) Error!void {
         try w.writeAll(SIG_LFH); // header signature
         try w.writeInt(u16, VERSION_EXTRACT, .little); // version
         try writeCommonHeaderPart(self, w);
         try w.writeAll(self.fileName); // file name
     }
 
-    fn writeCentralDirectoryHeader(self: *const Self, w: AnyWriter) !void {
+    fn writeCentralDirectoryHeader(self: *const Self, w: Writer) Error!void {
         try w.writeAll(SIG_CDFH); // header signature
         try w.writeInt(u16, VERSION_MADE, .little); // version made by
         try w.writeInt(u16, VERSION_EXTRACT, .little); // version needed to extract
@@ -116,7 +127,7 @@ pub const ZipOut = struct {
 
     const Self = @This();
 
-    pub fn init(allocator: std.mem.Allocator, file: File, compress: bool) !ZipOut {
+    pub fn init(allocator: std.mem.Allocator, file: File, compress: bool) Error!ZipOut {
         const off = try file.getPos();
         var result = Self{
             .allocator = allocator,
@@ -138,7 +149,7 @@ pub const ZipOut = struct {
         self.arena.deinit();
     }
 
-    pub fn write(self: *Self, fileName: []const u8, data: []const u8) !void {
+    pub fn write(self: *Self, fileName: []const u8, data: []const u8) WriteError!void {
         // remove the old central directory
         try self.file.setEndPos(self.offset_cd);
         try self.file.seekTo(self.offset_cd);
@@ -165,19 +176,21 @@ pub const ZipOut = struct {
             var buff = std.ArrayList(u8).init(self.allocator);
             defer buff.deinit();
             var data_stream = std.io.fixedBufferStream(data);
-            try std.compress.flate.deflate.compress(.raw, data_stream.reader(), buff.writer(), .{});
+            std.compress.flate.deflate.compress(.raw, data_stream.reader(), buff.writer(), .{}) catch {
+                return error.CompressionFailed;
+            };
             const compressedSize = try inputSizeCast(buff.items.len);
             if (compressedSize < uncompressedSize) {
                 entry_ptr.compressionMethod = CompressionMethod.Deflate;
                 entry_ptr.compressedSize = compressedSize;
-                try entry_ptr.writeLocalFileHeader(writer.any());
+                try entry_ptr.writeLocalFileHeader(writer);
                 try writer.writeAll(buff.items);
                 written = true;
             }
         }
         if (!written) {
             // compression disabled or compressed data bigger than original
-            try entry_ptr.writeLocalFileHeader(writer.any());
+            try entry_ptr.writeLocalFileHeader(writer);
             try writer.writeAll(data);
         }
 
@@ -192,7 +205,7 @@ pub const ZipOut = struct {
         const w = self.file.writer();
 
         for (self.entries.items) |entry| {
-            try entry.writeCentralDirectoryHeader(w.any());
+            try entry.writeCentralDirectoryHeader(w);
         }
 
         const cdr_count: u16 = try countCast(self.entries.items.len);
