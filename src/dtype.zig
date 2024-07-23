@@ -57,7 +57,7 @@ inline fn comptimePrependShape(comptime n: usize, comptime shape: []const u8) []
 ///     3, "()" -> "(3,)"
 ///     3, "(4,)" -> "(3, 4)"
 ///     3, "(4, 5)" -> "(3, 4, 5)"
-pub fn prependShape(writer: std.io.AnyWriter, n: usize, shape: []const u8) !void {
+pub fn prependShape(writer: anytype, n: usize, shape: []const u8) !void {
     const eql = std.mem.eql;
     if (eql(u8, shape, "()")) {
         return writer.print("({d},)", .{n});

@@ -26,7 +26,7 @@ const VERSION_MADE = (3 << 8) | 63;
 // See Section 4.4.3 of the specification.
 const VERSION_EXTRACT = 20;
 
-const Error = Writer.Error || File.GetSeekPosError || error{
+pub const Error = Writer.Error || File.GetSeekPosError || error{
     InputFileTooLarge,
     OutputFileTooLarge,
     TooManyFilesInZip,
@@ -35,7 +35,7 @@ const Error = Writer.Error || File.GetSeekPosError || error{
 
 // ZipOut.write() is the only function that truncates or allocates, so it can fail in some other
 // ways.
-const WriteError = Error || File.SetEndPosError || std.mem.Allocator.Error || error {CompressionFailed};
+pub const WriteError = Error || File.SetEndPosError || std.mem.Allocator.Error || error {CompressionFailed};
 
 inline fn offsetCast(offset: u64) Error!u32 {
     if (offset > std.math.maxInt(u32)) {

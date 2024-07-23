@@ -1,9 +1,10 @@
 const std = @import("std");
 const dtype = @import("dtype.zig");
 const helper = @import("helper.zig");
+const zip_out = @import("zip-out.zig");
 
 pub const types = @import("types.zig");
-pub const ZipOut = @import("zip-out.zig").ZipOut;
+pub const ZipOut = zip_out.ZipOut;
 
 const AnyWriter = std.io.AnyWriter;
 const Allocator = std.mem.Allocator;
@@ -11,6 +12,12 @@ const File = std.fs.File;
 
 const MAGIC = "\x93NUMPY";
 const VERSION = "\x01\x00";
+
+pub const NpyError = error{
+    InvalidShape,
+    UnsupportedDataType,
+    InvalidHeader,
+};
 
 inline fn ensureSliceOrArrayPointer(comptime T: type) void {
     const tinfo = @typeInfo(T);
@@ -31,7 +38,7 @@ inline fn ensureSliceOrArrayPointer(comptime T: type) void {
 /// Try to parse the length (first dimension of the shape) from the ASCII header of a .npy file. The
 /// current position of the file is expected to be at the '{' character and the function, if
 /// successful, will leave the file at the first character after the closing '}'.
-fn parseAsciiHeaderLen(reader: std.io.AnyReader) !u64 {
+fn parseAsciiHeaderLen(reader: anytype) !u64 {
     // TODO: Do we need this to be more sophisticated than a simple scan for "shape': ("? As long
     // as we only parse the output of our own writeHeader() function, it should be enough.
     const pattern: []const u8 = "shape': (";
@@ -98,10 +105,10 @@ const HLEN_OFFSET = 8;
 /// needs to be updated afterwards. When set to false, the header will be generated twice to
 /// calculate its length first which is less efficient but doesn't require further seeking in the
 /// output file or buffer.
-fn writeHeader(comptime T: type, _writer: AnyWriter, len: u64, dummy_hlen: bool) !u16 {
+fn writeHeader(comptime T: type, _writer: anytype, len: u64, dummy_hlen: bool) (@TypeOf(_writer).Error || NpyError)!u16 {
     const dtinfo = dtype.dtypeOf(T);
     var counter = std.io.countingWriter(_writer);
-    var w = counter.writer().any();
+    var w = counter.writer();
     try w.writeAll(MAGIC);
     try w.writeAll(VERSION);
 
@@ -109,7 +116,7 @@ fn writeHeader(comptime T: type, _writer: AnyWriter, len: u64, dummy_hlen: bool)
     if (dummy_hlen) {
         try w.writeInt(u16, 0, .little);
     } else {
-        const hlen = try writeHeader(T, std.io.null_writer.any(), len, true);
+        const hlen = try writeHeader(T, std.io.null_writer, len, true);
         try w.writeInt(u16, hlen, .little);
     }
 
@@ -138,7 +145,7 @@ fn writeHeader(comptime T: type, _writer: AnyWriter, len: u64, dummy_hlen: bool)
     return @intCast(hlen);
 }
 
-fn writeData(comptime T: type, writer: AnyWriter, data: []const T) !void {
+fn writeData(comptime T: type, writer: anytype, data: []const T) @TypeOf(writer).Error!void {
     const ptr: [*]const u8 = @ptrCast(data.ptr);
     const bytes_out = @sizeOf(T) * data.len;
     try writer.writeAll(ptr[0..bytes_out]);
@@ -151,18 +158,19 @@ fn writeData(comptime T: type, writer: AnyWriter, data: []const T) !void {
 /// whole data is available at once, consider using the save() function instead.
 pub fn NpyOut(comptime T: type) type {
     return struct {
-        stream: std.io.StreamSource,
+        file: File,
         start_offset: u64, // offset to the first byte of the MAGIC value
         len: u64, // number of T-type elements written (first dimension of output shape)
         tail_offset: u64, // offset to the first byte after the last written data
         bin_start_offset: ?u64, // offset to the first byte of the binary data
 
         const Self = @This();
+        const Error = NpyError || File.GetSeekPosError || File.SeekError || File.Writer.Error || NpyError;
 
-        pub fn fromFile(file: File) !Self {
+        pub fn fromFile(file: File) Error!Self {
             const off = try file.getPos();
             var result = Self{
-                .stream = .{ .file = file },
+                .file = file,
                 .start_offset = off,
                 .len = 0,
                 .tail_offset = 0,
@@ -172,7 +180,9 @@ pub fn NpyOut(comptime T: type) type {
             try file.seekFromEnd(0);
             if (off != try file.getPos()) {
                 // there is existing data in the file
-                try result.parseExistingHeader(); // updates len and offsets
+                result.parseExistingHeader() catch { // updates len and offsets
+                    return error.InvalidHeader;
+                };
             } else {
                 // new file; write full header
                 try result.updateHeader(); // also updates bin_start_offset
@@ -182,22 +192,9 @@ pub fn NpyOut(comptime T: type) type {
             return result;
         }
 
-        pub fn fromStreamSource(ssource: std.io.StreamSource) !Self {
-            var result = Self{
-                .stream = ssource,
-                .start_offset = 0,
-                .len = 0,
-                .tail_offset = 0,
-                .bin_start_offset = null,
-            };
-            try result.updateHeader(); // also updates bin_start_offset
-            result.tail_offset = result.bin_start_offset.?;
-            return result;
-        }
-
         fn parseExistingHeader(self: *Self) !void {
-            var reader = self.stream.reader();
-            try self.stream.seekTo(self.start_offset);
+            var reader = self.file.reader();
+            try self.file.seekTo(self.start_offset);
 
             // verify that the magic value and version are correct
             var magic = std.mem.zeroes([MAGIC.len]u8);
@@ -213,28 +210,30 @@ pub fn NpyOut(comptime T: type) type {
 
             // read the len confirm that the header that we would have written is equal to the
             // header in the file
-            self.len = try parseAsciiHeaderLen(reader.any());
-            try self.stream.seekTo(self.start_offset);
+            self.len = try parseAsciiHeaderLen(reader);
+            try self.file.seekTo(self.start_offset);
             var change_detector = helper.changeDetectionWriter(reader.any());
-            _ = try writeHeader(T, change_detector.writer(), self.len, false);
+            _ = writeHeader(T, change_detector.writer(), self.len, false) catch {
+                return error.InvalidHeader;
+            };
             if (change_detector.anything_changed) {
                 return error.InvalidHeader;
             }
 
             // derive the tail offset from length and record size
-            self.bin_start_offset = try self.stream.getPos();
+            self.bin_start_offset = try self.file.getPos();
             self.tail_offset = @sizeOf(T) * self.len + self.bin_start_offset.?;
         }
 
         fn updateHeader(self: *Self) !void {
-            try self.stream.seekTo(self.start_offset);
-            const hlen: u16 = try writeHeader(T, self.stream.writer().any(), self.len, true);
-            const bin_start_offset = try self.stream.getPos();
+            try self.file.seekTo(self.start_offset);
+            const hlen: u16 = try writeHeader(T, self.file.writer(), self.len, true);
+            const bin_start_offset = try self.file.getPos();
 
             // update the header length field; typically will only be different when the header is
             // written for the first time
-            try self.stream.seekTo(self.start_offset + HLEN_OFFSET);
-            try self.stream.writer().writeInt(u16, hlen, .little);
+            try self.file.seekTo(self.start_offset + HLEN_OFFSET);
+            try self.file.writer().writeInt(u16, hlen, .little);
 
             if (self.bin_start_offset) |x| {
                 if (x != bin_start_offset) {
@@ -247,21 +246,21 @@ pub fn NpyOut(comptime T: type) type {
             }
         }
 
-        pub fn appendSlice(self: *Self, data: []const T) !void {
+        pub fn appendSlice(self: *Self, data: []const T) Error!void {
             // update the length and write the header
             self.len += data.len;
             try self.updateHeader();
 
             // write the binary data
-            try self.stream.seekTo(self.tail_offset);
+            try self.file.seekTo(self.tail_offset);
             const ptr: [*]const u8 = @ptrCast(data.ptr);
             const bytes_out = @sizeOf(T) * data.len;
-            try self.stream.writer().writeAll(ptr[0..bytes_out]);
+            try self.file.writer().writeAll(ptr[0..bytes_out]);
 
-            self.tail_offset = try self.stream.getPos();
+            self.tail_offset = try self.file.getPos();
         }
 
-        pub fn append(self: *Self, sample: T) !void {
+        pub fn append(self: *Self, sample: T) Error!void {
             return self.appendSlice(&[1]T{sample});
         }
     };
@@ -276,8 +275,9 @@ pub const NpzOut = struct {
     allocator: Allocator,
 
     const Self = @This();
+    pub const Error = NpyError || zip_out.WriteError || zip_out.Error;
 
-    pub fn init(allocator: Allocator, file: File, compress: bool) !NpzOut {
+    pub fn init(allocator: Allocator, file: File, compress: bool) Error!NpzOut {
         return .{
             .zip_out = try ZipOut.init(allocator, file, compress),
             .allocator = allocator,
@@ -288,7 +288,7 @@ pub const NpzOut = struct {
     ///
     /// The extension ".npy" will be appended to the given name following the Python API. The
     /// argument `slice` works the same way as in the `save()` function.
-    pub fn save(self: *Self, name: []const u8, slice: anytype) !void {
+    pub fn save(self: *Self, name: []const u8, slice: anytype) Error!void {
         const data = try allocateSave(self.allocator, slice);
         defer self.allocator.free(data);
         const fileName = try std.fmt.allocPrint(self.allocator, "{s}.npy", .{name});
@@ -305,16 +305,16 @@ pub const NpzOut = struct {
 ///
 /// The result is owned by the caller and needs to be freed using the allocator passed to the
 /// function. The `slice` argument works the same way as in the `save()` function.
-pub fn allocateSave(allocator: Allocator, slice: anytype) ![]const u8 {
+pub fn allocateSave(allocator: Allocator, slice: anytype) (NpyError || error{OutOfMemory})![]const u8 {
     ensureSliceOrArrayPointer(@TypeOf(slice)); // only needed for nicer error messages
     const T = @TypeOf(slice.ptr[0]);
     var buf = std.ArrayList(u8).init(allocator);
 
     // we could simply call save(buf.writer...) but we can save a little bit of time by writing the
     // header with dummy length field value first and fixing it afterwards
-    const hlen: u16 = try writeHeader(T, buf.writer().any(), slice.len, true);
+    const hlen: u16 = try writeHeader(T, buf.writer(), slice.len, true);
     @memcpy(buf.items[HLEN_OFFSET .. HLEN_OFFSET + 2], &std.mem.toBytes(hlen));
-    try writeData(T, buf.writer().any(), slice);
+    try writeData(T, buf.writer(), slice);
 
     return buf.toOwnedSlice();
 }
@@ -324,7 +324,7 @@ pub fn allocateSave(allocator: Allocator, slice: anytype) ![]const u8 {
 /// Corresponds to `numpy.save()` in Python. The argument `slice` can be a slice or a pointer to an
 /// array of supported basic types or structures. Structures are supported as long as they're marked
 /// as "extern" or "packed" and there is a corresponding NumPy type with the exact same layout.
-pub fn save(writer: AnyWriter, slice: anytype) !void {
+pub fn save(writer: anytype, slice: anytype) (@TypeOf(writer).Error || NpyError)!void {
     ensureSliceOrArrayPointer(@TypeOf(slice)); // only needed for nicer error messages
     const T = @TypeOf(slice.ptr[0]);
     _ = try writeHeader(T, writer, slice.len, false);
@@ -337,7 +337,7 @@ pub fn save(writer: AnyWriter, slice: anytype) !void {
 /// anonymous struct or a tuple. Following the Python API, the keys in the tuple case will be named
 /// "arr_0", "arr_1", etc. The values should be slices of pointer arrays similar to the `save()`
 /// argument.
-pub fn savez(file: File, allocator: Allocator, compressed: bool, args: anytype) !void {
+pub fn savez(file: File, allocator: Allocator, compressed: bool, args: anytype) NpzOut.Error!void {
     var npz_out = try NpzOut.init(allocator, file, compressed);
     defer npz_out.deinit();
     inline for (comptime std.meta.fieldNames(@TypeOf(args))) |field_name| {
