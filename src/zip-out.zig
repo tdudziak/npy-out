@@ -35,7 +35,7 @@ pub const Error = Writer.Error || File.GetSeekPosError || error{
 
 // ZipOut.write() is the only function that truncates or allocates, so it can fail in some other
 // ways.
-pub const WriteError = Error || File.SetEndPosError || std.mem.Allocator.Error || error {CompressionFailed};
+pub const WriteError = Error || File.SetEndPosError || std.mem.Allocator.Error || error{CompressionFailed};
 
 inline fn offsetCast(offset: u64) Error!u32 {
     if (offset > std.math.maxInt(u32)) {
@@ -122,6 +122,7 @@ pub const ZipOut = struct {
     entries: std.ArrayList(Entry),
     file: File,
     compress: bool,
+    require_flush: bool, // don't write the central directory in every write() call
     offset_start: u64, // file offset to the start of zip data
     offset_cd: u64, // file offset to the start of central directory
 
@@ -135,10 +136,11 @@ pub const ZipOut = struct {
             .entries = std.ArrayList(Entry).init(allocator),
             .file = file,
             .compress = compress,
+            .require_flush = false,
             .offset_start = off,
             .offset_cd = off,
         };
-        try result.writeCentralDirectory();
+        try result.flush();
         return result;
     }
 
@@ -196,11 +198,13 @@ pub const ZipOut = struct {
 
         // update the central directory offset and write it
         self.offset_cd = try self.file.getPos();
-        try self.writeCentralDirectory();
+        if (!self.require_flush) {
+            try self.flush();
+        }
     }
 
     // Writes the central directory at the file offset `offset_cd`.
-    fn writeCentralDirectory(self: *Self) !void {
+    pub fn flush(self: *Self) !void {
         try self.file.seekTo(self.offset_cd);
         const w = self.file.writer();
 

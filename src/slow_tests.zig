@@ -77,8 +77,6 @@ test "zip64_offset.npz" {
 
 // a ZIP file with a large number of tiny files; the overall size is <4GiB
 test "zip64_filecount.npz" {
-    // FIXME: this test is really slow because of the central directory being regenerated after
-    // every save()
     const allocator = std.testing.allocator;
     var out = try OutDir.init();
     defer out.deinit();
@@ -87,6 +85,8 @@ test "zip64_filecount.npz" {
     defer fp.close();
 
     var zout = try npy_out.NpzOut.init(allocator, fp, false);
+    defer zout.deinit();
+    zout.zip_out.require_flush = true; // significantly speeds up the test
     var name_buf = std.ArrayList(u8).init(allocator);
     defer name_buf.deinit();
 
@@ -96,7 +96,9 @@ test "zip64_filecount.npz" {
         try zout.save(name_buf.items, &data);
     }
 
-    return error.TestNotFullyImplemented;
+    const ret = zout.zip_out.flush();
+    try std.testing.expectEqual(error.TooManyFilesInZip, ret);
+
     // TODO: implement zip64 and update with the right hash below
     // try expectFileMd5("...", fp);
 }
@@ -116,6 +118,7 @@ test "zip64_filename.npz" {
     const ret = npz_out.save(&fname, &[_]f32{ 1, 2, 3 });
 
     try std.testing.expectEqual(error.FileNameTooLong, ret);
+
     // TODO: implement zip64 and update with the right hash below
     // try expectFileMd5("...", fp);
 }
