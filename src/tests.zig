@@ -43,13 +43,13 @@ pub fn expectEqualsReferenceFile(fname: []const u8, fp: std.fs.File) !void {
 /// Allows to override the output directory for the tests by setting the `NPY_OUT_DIR` environment
 /// variable. If the variable is not set, a temporary directory is used and the output file is
 /// deleted after the test.
-const OutDir = union(enum) {
+pub const OutDir = union(enum) {
     tmpDir: std.testing.TmpDir,
     outDir: std.fs.Dir,
 
     const Self = @This();
 
-    fn init() !Self {
+    pub fn init() !Self {
         if (std.process.getEnvVarOwned(std.testing.allocator, "NPY_OUT_DIR")) |path| {
             defer std.testing.allocator.free(path);
             const out_dir = try std.fs.openDirAbsolute(path, .{});
@@ -60,14 +60,14 @@ const OutDir = union(enum) {
         }
     }
 
-    fn dir(self: *const Self) std.fs.Dir {
+    pub fn dir(self: *const Self) std.fs.Dir {
         return switch (self.*) {
             .tmpDir => self.tmpDir.dir,
             .outDir => self.outDir,
         };
     }
 
-    fn deinit(self: *Self) void {
+    pub fn deinit(self: *Self) void {
         switch (self.*) {
             .tmpDir => self.tmpDir.cleanup(),
             .outDir => self.outDir.close(),
