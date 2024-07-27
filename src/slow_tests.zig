@@ -92,7 +92,7 @@ test "zip64_filecount.npz" {
 
     for (0..(0xffff + 1)) |i| {
         name_buf.clearRetainingCapacity();
-        try std.fmt.format(name_buf.writer(), "file_{}", .{ i });
+        try std.fmt.format(name_buf.writer(), "file_{}", .{i});
         try zout.save(name_buf.items, &data);
     }
 
@@ -121,4 +121,43 @@ test "zip64_filename.npz" {
 
     // TODO: implement zip64 and update with the right hash below
     // try expectFileMd5("...", fp);
+}
+
+fn ExponentialStruct(comptime n: comptime_int) type {
+    if (n <= 0) {
+        return extern struct {
+            a: f32,
+            b: f32,
+
+            fn init(a: f32, b: f32) @This() {
+                return @This(){ .a = a, .b = b };
+            }
+        };
+    } else {
+        return extern struct {
+            left: ExponentialStruct(n - 1),
+            right: ExponentialStruct(n - 1),
+
+            fn init(a: f32, c: f32) @This() {
+                const b = (a + c) / 2;
+                return @This(){
+                    .left = ExponentialStruct(n - 1).init(a, b),
+                    .right = ExponentialStruct(n - 1).init(b, c),
+                };
+            }
+        };
+    }
+}
+
+// tests what happens when the dtype string is longer than 0xffff bytes
+test "huge_header.npy" {
+    var out = try OutDir.init();
+    defer out.deinit();
+    const data = [1]ExponentialStruct(11){
+        ExponentialStruct(11).init(0.0, 1.0),
+    };
+    var fp = try out.dir().createFile("huge_header.npy", .{ .read = true });
+    defer fp.close();
+    const ret = npy_out.save(fp.writer(), &data);
+    try std.testing.expectEqual(error.UnsupportedDataType, ret);
 }
